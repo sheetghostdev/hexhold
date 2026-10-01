@@ -17,6 +17,8 @@ var sel_building: MatchState.Building = null
 var sel_tile := -1
 var reach := {}
 var targets: Array[int] = []
+var build_cat := ""        # open build-menu category on the selected hex
+var preview_type := ""     # building being previewed before confirming
 
 var touches := {}
 var drag_moved := false
@@ -143,6 +145,8 @@ func _tap(px: Vector2) -> void:
 
 func _highlights() -> void:
 	board.selected = sel_tile
+	board.preview_idx = sel_tile if preview_type != "" else -1
+	board.preview_type = preview_type
 	board.reach = reach
 	board.targets = targets
 	var info := {}
@@ -156,6 +160,8 @@ func _highlights() -> void:
 
 
 func select_unit(u: MatchState.UnitS) -> void:
+	build_cat = ""
+	preview_type = ""
 	Sfx.play("tap")
 	sel_unit = u
 	sel_building = null
@@ -166,6 +172,8 @@ func select_unit(u: MatchState.UnitS) -> void:
 
 
 func select_building(b: MatchState.Building) -> void:
+	build_cat = ""
+	preview_type = ""
 	Sfx.play("tap")
 	sel_unit = null
 	sel_building = b
@@ -176,6 +184,9 @@ func select_building(b: MatchState.Building) -> void:
 
 
 func select_tile(i: int) -> void:
+	if i != sel_tile:
+		build_cat = ""
+		preview_type = ""
 	sel_unit = null
 	sel_building = null
 	sel_tile = i
@@ -185,6 +196,8 @@ func select_tile(i: int) -> void:
 
 
 func deselect() -> void:
+	build_cat = ""
+	preview_type = ""
 	sel_unit = null
 	sel_building = null
 	sel_tile = -1
@@ -259,6 +272,40 @@ func do_train(b: MatchState.Building, unit_id: String) -> void:
 		board.burst(m.center_px(e["at"]), board.color_of(me))
 	hud.refresh_all()
 	select_building(b)
+
+
+## Build menu: category -> option -> preview -> confirm.
+func open_category(cat: String) -> void:
+	Sfx.play("tap")
+	build_cat = cat
+	preview_type = ""
+	_highlights()
+
+
+func preview_build(type: String) -> void:
+	Sfx.play("tap")
+	preview_type = type
+	_highlights()
+
+
+func build_back() -> void:
+	if preview_type != "":
+		preview_type = ""
+	else:
+		build_cat = ""
+	_highlights()
+
+
+func confirm_build() -> void:
+	var at := sel_tile
+	var res := _send({ "type": "build", "building": preview_type, "at": at })
+	if not res["ok"]:
+		return
+	Sfx.play("coin")
+	board.refresh()
+	board.burst(m.center_px(at), board.color_of(me))
+	hud.refresh_all()
+	select_building(m.building_on(at))
 
 
 func end_turn() -> void:

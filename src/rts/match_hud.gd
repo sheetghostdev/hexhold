@@ -268,17 +268,116 @@ func _tile_card(i: int) -> void:
 			txt += " Units inside get extra cover."
 		card_box.add_child(_note(txt + " [color=#9fb0bf](Coming in milestone 4.)[/color]"))
 		return
-	_header(IconRect.make("terrain", 58, 1), "Open ground", where)
-	if owner == s.me:
-		card_box.add_child(_note("Buildable land. [color=#9fb0bf](The build menu arrives in milestone 2.)[/color]"))
+	if owner != s.me:
+		_header(IconRect.make("terrain", 58, 1), "Open ground", where)
+		card_box.add_child(_note("You can only build inside your territory. Every building claims the hexes around it."))
+		return
+	if not s.my_turn():
+		_header(IconRect.make("terrain", 58, 1), "Open ground", where)
+		card_box.add_child(_note("Buildable land. Build here on your turn."))
+		return
+	if s.preview_type != "":
+		_build_preview(i, s.preview_type)
+	elif s.build_cat != "":
+		_build_options(i, s.build_cat)
+	else:
+		_build_categories()
+
+
+const CATEGORIES := [["Power", "power_plant"], ["Production", "barracks"], ["Economy", "drill"], ["Defense", "turret"]]
+
+
+func _build_categories() -> void:
+	_header(IconRect.make("terrain", 58, 1), "Open ground", "Your territory · what do you want to build?")
+	var grid := GridContainer.new()
+	grid.columns = 2
+	grid.add_theme_constant_override("h_separation", 10)
+	grid.add_theme_constant_override("v_separation", 10)
+	for c in CATEGORIES:
+		var b := UI.button("", s.open_category.bind(c[0]), "", 76)
+		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var h := UI.hbox(10)
+		h.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		h.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		h.offset_left = 12
+		var ic := IconRect.make("mil_building", 50, 0, s.board.color_of(s.me))
+		ic.tag = c[1]
+		ic.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		h.add_child(ic)
+		var l := UI.label(c[0])
+		l.add_theme_font_size_override("font_size", 24)
+		l.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		h.add_child(l)
+		b.add_child(h)
+		grid.add_child(b)
+	card_box.add_child(grid)
+
+
+func _build_options(i: int, cat: String) -> void:
+	_header(IconRect.make("terrain", 58, 1), "Build: %s" % cat, "Pick a building to preview it.")
+	for d in DB.sorted_buildings():
+		if d.category != cat or not d.buildable:
+			continue
+		var prob := s.m.build_problem(s.me, d.id, i)
+		var pw: int = d.power_supply if d.power_supply > 0 else -d.power_use
+		card_box.add_child(_row("mil_building", d.id, s.board.color_of(s.me), d.name, _build_effect(d), d.cost_alloy, d.cost_fuel, prob, s.preview_build.bind(d.id), pw))
+	card_box.add_child(_back_row(null))
+
+
+func _build_effect(d: BuildingDef) -> String:
+	return "%d turn%s to build" % [d.build_turns, "" if d.build_turns == 1 else "s"]
+
+
+func _build_preview(i: int, type: String) -> void:
+	var d := DB.building(type)
+	var m := s.m
+	var sub := _build_effect(d)
+	if d.power_supply > 0:
+		sub += " · [color=#ffd23f]+%d power[/color]" % d.power_supply
+	if d.power_use > 0:
+		sub += " · [color=#ffd23f]uses %d power[/color]" % d.power_use
+	_header(_icon("mil_building", type, s.board.color_of(s.me)), d.name, sub)
+	card_box.add_child(_note(d.description))
+	var pw := m.power(s.me, true)
+	var dem: int = pw["demand"] + d.power_use
+	var sup: int = pw["supply"] + d.power_supply
+	if d.power_use > 0 or d.power_supply > 0:
+		var txt := "Power after: [b]%d used / %d made[/b]." % [dem, sup]
+		if dem > sup:
+			txt = "[color=#ff8a7a]" + txt + " Not enough power: your newest buildings will switch off. Build a Power Plant.[/color]"
+		card_box.add_child(_note(txt))
+	var gain := 0
+	var terr := m.territory()
+	for j in m.in_range(i, d.territory):
+		if terr[j] != s.me and m.ground[j] == MatchState.Ground.LAND:
+			gain += 1
+	if gain > 0:
+		card_box.add_child(_note("Claims [b]%d new hex%s[/b] of territory (highlighted)." % [gain, "" if gain == 1 else "es"]))
+	var prob := m.build_problem(s.me, type, i)
+	var confirm := UI.button("Build", s.confirm_build, "PrimaryButton", 84)
+	confirm.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	confirm.add_theme_font_size_override("font_size", 28)
+	confirm.disabled = prob != ""
+	if prob != "":
+		confirm.text = prob
+	card_box.add_child(_back_row(confirm))
+
+
+func _back_row(extra: Control) -> HBoxContainer:
+	var h := UI.hbox(10)
+	var back := UI.button("Back", s.build_back, "GhostButton", 84)
+	back.custom_minimum_size.x = 150
+	h.add_child(back)
+	if extra != null:
+		h.add_child(extra)
+	return h
 
 
 ## A full-width option: icon · name + what it does · costs.
-func _row(kind: String, tag: String, col: Color, title: String, effect: String, alloy: int, fuel: int, problem: String, cb: Callable) -> Button:
+func _row(kind: String, tag: String, col: Color, title: String, effect: String, alloy: int, fuel: int, problem: String, cb: Callable, power := 0) -> Button:
 	var b := UI.button("", cb, "", 86)
 	b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	b.disabled = problem != ""
-	var poor := problem == "Not enough resources"
 	var h := UI.hbox(12)
 	h.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	h.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -295,11 +394,11 @@ func _row(kind: String, tag: String, col: Color, title: String, effect: String, 
 	var t := UI.label(title)
 	t.add_theme_font_size_override("font_size", 24)
 	v.add_child(t)
-	var e := UI.label(effect if problem == "" or poor else problem, "Small")
+	var e := UI.label(effect if problem == "" else problem, "Small")
 	e.add_theme_font_size_override("font_size", 18)
 	e.clip_text = true
 	e.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	if problem != "" and not poor:
+	if problem != "":
 		e.add_theme_color_override("font_color", Color("#ffb37a"))
 	v.add_child(e)
 	h.add_child(v)
@@ -314,6 +413,16 @@ func _row(kind: String, tag: String, col: Color, title: String, effect: String, 
 		cl.add_theme_font_size_override("font_size", 24)
 		if pair[2] < pair[1]:
 			cl.add_theme_color_override("font_color", UI.BAD)
+		c.add_child(cl)
+		c.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		h.add_child(c)
+	if power != 0:
+		var c := UI.hbox(0)
+		c.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		c.add_child(IconRect.make("power", 26))
+		var cl := UI.label(("+%d" % power) if power > 0 else str(-power))
+		cl.add_theme_font_size_override("font_size", 24)
+		cl.add_theme_color_override("font_color", Color("#9ff0a8") if power > 0 else Color("#ffd23f"))
 		c.add_child(cl)
 		c.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		h.add_child(c)

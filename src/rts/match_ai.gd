@@ -21,6 +21,7 @@ static func play_turn(m: MatchState) -> void:
 			m.apply(p, { "type": "move", "unit": u.id, "to": dest })
 			if m.units.has(u):
 				_attack(m, p, u)
+	_build(m, p)
 	_train(m, p)
 
 
@@ -79,5 +80,54 @@ static func _count(m: MatchState, p: int, type: String) -> int:
 	var n := 0
 	for u in m.player_units(p):
 		if u.type == type:
+			n += 1
+	return n
+
+
+## One construction per turn: enough power first, then a Factory, then turrets.
+static func _build(m: MatchState, p: int) -> void:
+	var pw := m.power(p, true)
+	var want := ""
+	if pw["demand"] + 2 > pw["supply"]:
+		want = "power_plant"
+	elif _bcount(m, p, "factory") == 0:
+		want = "factory"
+	elif _bcount(m, p, "turret") < 2:
+		want = "turret"
+	elif _bcount(m, p, "drill") < 2:
+		want = "drill"
+	if want == "":
+		return
+	var d := DB.building(want)
+	if m.cost_problem(p, d.cost_alloy, d.cost_fuel) != "":
+		return
+	var enemy := _enemy_hq(m, p)
+	var best := -1
+	var best_s := -INF
+	for i in m.n_tiles():
+		if m.ground[i] != MatchState.Ground.LAND or m.owner_of(i) != p:
+			continue
+		if m.build_problem(p, want, i) != "":
+			continue
+		var s := 0.0
+		match want:
+			"turret": s = -m.dist(i, enemy)
+			"power_plant": s = m.dist(i, enemy)
+			"drill":
+				for j in m.neighbors(i):
+					if m.obstacle[j] != 0:
+						s += 1.0
+			_: s = -absf(m.dist(i, enemy) - m.dist(m.hq_of(p).idx, enemy))
+		if s > best_s:
+			best_s = s
+			best = i
+	if best >= 0:
+		m.apply(p, { "type": "build", "building": want, "at": best })
+
+
+static func _bcount(m: MatchState, p: int, type: String) -> int:
+	var n := 0
+	for b in m.player_buildings(p):
+		if b.type == type:
 			n += 1
 	return n

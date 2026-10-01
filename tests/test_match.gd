@@ -16,6 +16,7 @@ func _init() -> void:
 	test_data()
 	test_setup()
 	test_commands()
+	test_build()
 	test_ai_games()
 	print("ALL MATCH TESTS PASSED" if failures == 0 else "%d MATCH FAILURES" % failures)
 	quit(1 if failures > 0 else 0)
@@ -91,6 +92,51 @@ func test_commands() -> void:
 	check(not m.apply(0, { "type": "train", "building": brk.id, "unit": "tank" })["ok"], "barracks can't train tanks")
 	var et := m.apply(0, { "type": "end_turn" })
 	check(et["ok"] and m.cur == 1, "end turn passes to player 2")
+
+
+func test_build() -> void:
+	var m := new_match(5, false)
+	var terr := m.territory()
+	var spot := -1
+	var outside := -1
+	var blocked := -1
+	for i in m.n_tiles():
+		if m.ground[i] != MatchState.Ground.LAND:
+			continue
+		if terr[i] == 0 and m.obstacle[i] == 0 and m.building_on(i) == null and m.unit_on(i) == null and spot < 0:
+			spot = i
+		if terr[i] == 0 and m.obstacle[i] != 0:
+			blocked = i
+		if terr[i] != 0 and m.obstacle[i] == 0 and outside < 0:
+			outside = i
+	check(spot >= 0 and blocked >= 0 and outside >= 0, "found build test hexes")
+	check(m.build_problem(0, "turret", outside) == "Outside your territory", "can't build outside territory")
+	check(m.build_problem(0, "turret", blocked).begins_with("Clear the"), "must clear obstacles first")
+	check(m.build_problem(0, "hq", spot) != "", "can't build a second home base")
+	var keep := m.players[0].alloy
+	m.players[0].alloy = 1
+	check(m.build_problem(0, "factory", spot).begins_with("Need"), "unaffordable building explains why")
+	m.players[0].alloy = keep
+	var owned_before := 0
+	for t in m.territory():
+		if t == 0:
+			owned_before += 1
+	var alloy := m.players[0].alloy
+	var res := m.apply(0, { "type": "build", "building": "drill", "at": spot })
+	check(res["ok"], "build a drill: " + res["error"])
+	check(m.players[0].alloy == alloy - DB.building("drill").cost_alloy, "building costs alloy")
+	var b := m.building_on(spot)
+	check(b != null and b.build_left == DB.building("drill").build_turns, "construction started")
+	check(res["events"][0]["type"] == "build" and res["events"][0]["at"] == [spot], "build event")
+	var owned_after := 0
+	for t in m.territory():
+		if t == 0:
+			owned_after += 1
+	check(owned_after >= owned_before, "territory grows as you build")
+	check(m.power(0)["demand"] == m.power(0, false)["demand"], "unfinished buildings use no power")
+	for k in DB.building("drill").build_turns * 2:
+		m.apply(m.cur, { "type": "end_turn" })
+	check(b.build_left == 0, "construction finishes")
 
 
 func test_ai_games() -> void:

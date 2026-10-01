@@ -22,6 +22,8 @@ var selected := -1
 var reach := {}
 var targets: Array[int] = []
 var target_info := {}
+var preview_idx := -1
+var preview_type := ""
 
 # animation: unit -> map position while moving
 var unit_pos := {}
@@ -35,6 +37,7 @@ var mat_solid: StandardMaterial3D
 var mat_water: StandardMaterial3D
 var mat_overlay: StandardMaterial3D
 var mat_ghost: StandardMaterial3D
+var mat_preview: StandardMaterial3D
 var mat_blob: StandardMaterial3D
 var mat_cloud: StandardMaterial3D
 var team_mats := {}
@@ -85,6 +88,8 @@ func _materials() -> void:
 	mat_ghost = mat_overlay.duplicate()
 	mat_ghost.no_depth_test = false
 	mat_ghost.render_priority = 1
+	mat_preview = mat_ghost.duplicate()
+	mat_preview.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
 	mat_blob = _vc(StandardMaterial3D.new())
 	mat_blob.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat_blob.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
@@ -231,6 +236,7 @@ func _flush(prefix: String) -> void:
 			match key.split(":")[0]:
 				"o": inst.material_override = mat_overlay
 				"g": inst.material_override = mat_ghost
+				"q": inst.material_override = mat_preview
 				"w": inst.material_override = mat_water
 				"b": inst.material_override = mat_blob
 				"c": inst.material_override = mat_cloud
@@ -292,6 +298,7 @@ func _build_static() -> void:
 		var dim := 1.0 if seen(i) else 0.62
 		_tile(i, c, dim, terr)
 	_flush("s:")
+	_flush("g:")
 	_flush("w:")
 	_flush("b:")
 	_flush("c:")
@@ -405,9 +412,22 @@ func _build_overlay() -> void:
 			pl.outline_render_priority = 5
 			pl.position = world(i) + Vector3(0.05, 1.7, 0)
 			preview_root.add_child(pl)
+	if preview_idx >= 0 and preview_type != "":
+		var pc := world(preview_idx)
+		var tint := color_of(viewer).lightened(0.35)
+		_add("q:mil_b_" + preview_type, _xf(pc), Color(1, 1, 1, 1))
+		_add("q:mil_bt_" + preview_type, _xf(pc), Color(tint.r, tint.g, tint.b, 1))
+		# hexes this building would add to your territory
+		var terr := m.territory()
+		var d := DB.building(preview_type)
+		for j in m.in_range(preview_idx, d.territory):
+			if terr[j] != viewer and m.ground[j] == MatchState.Ground.LAND:
+				var tc := color_of(viewer).lightened(0.2)
+				_add("o:hexfill", _xf(world(j) + Vector3(0, lift, 0)), Color(tc.r, tc.g, tc.b, 0.45))
 	if selected >= 0:
 		_add("o:hexline", _xf(world(selected) + Vector3(0, lift, 0)), Color(1, 1, 1, 0.95))
 	_flush("o:")
+	_flush("q:")
 
 
 # ---------------------------------------------------------------- units
@@ -495,6 +515,7 @@ func _process(delta: float) -> void:
 	if m == null:
 		return
 	mat_overlay.albedo_color.a = 0.8 + 0.2 * sin(_time * 5.0)
+	mat_preview.albedo_color.a = 0.8 + 0.2 * sin(_time * 4.0)
 	if mmi.has("c:cloud"):
 		mmi["c:cloud"].position = Vector3(sin(_time * 0.3) * 0.05, sin(_time * 0.8) * 0.03, 0)
 	for u in unit_pos:

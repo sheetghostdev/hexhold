@@ -236,12 +236,13 @@ func owner_of(i: int) -> int:
 
 # ---------------------------------------------------------------- power
 
-## {supply, demand} for a player; finished buildings only.
-func power(p: int) -> Dictionary:
+## {supply, demand} for a player: finished buildings only,
+## or also those still under construction (planned = true).
+func power(p: int, planned := false) -> Dictionary:
 	var supply := 0
 	var demand := 0
 	for b in buildings:
-		if b.owner == p and b.build_left == 0:
+		if b.owner == p and (b.build_left == 0 or planned):
 			supply += b.def().power_supply
 			demand += b.def().power_use
 	return { "supply": supply, "demand": demand }
@@ -425,6 +426,8 @@ func apply(p: int, cmd: Dictionary) -> Dictionary:
 			err = _cmd_attack(p, cmd)
 		"train":
 			err = _cmd_train(p, cmd)
+		"build":
+			err = _cmd_build(p, cmd)
 		"end_turn":
 			err = _cmd_end_turn(p)
 		_:
@@ -499,11 +502,9 @@ func train_problem(p: int, b: Building, unit_id: String) -> String:
 	var d := DB.unit(unit_id)
 	if player_units(p).size() >= DB.rules.unit_cap:
 		return "Army is full (%d units)" % DB.rules.unit_cap
-	if players[p].alloy < d.cost_alloy or players[p].fuel < d.cost_fuel:
-		return "Not enough resources"
 	if spawn_spot(b) < 0:
 		return "No free space next to it"
-	return ""
+	return cost_problem(p, d.cost_alloy, d.cost_fuel)
 
 
 ## Free hex next to a building for a new unit (prefers facing the enemy).
@@ -537,6 +538,48 @@ func _cmd_train(p: int, cmd: Dictionary) -> String:
 	u.fresh = true
 	update_explored(p)
 	_event(p, "spawn", [u.idx], { "unit": u.id, "type": unit_id, "at": u.idx, "from": b.idx })
+	return ""
+
+
+## Why a building can't go on hex i right now ("" = it can).
+func build_problem(p: int, type: String, i: int) -> String:
+	var d := DB.building(type)
+	if d == null or not d.buildable:
+		return "Can't build that"
+	if i < 0 or i >= n_tiles() or ground[i] != Ground.LAND:
+		return "Not buildable land"
+	if owner_of(i) != p:
+		return "Outside your territory"
+	if obstacle[i] != 0:
+		return "Clear the %s first" % obstacle_def(i).name.to_lower()
+	if building_on(i) != null:
+		return "Something is already built here"
+	if unit_on(i) != null:
+		return "A unit is standing here"
+	return cost_problem(p, d.cost_alloy, d.cost_fuel)
+
+
+func cost_problem(p: int, alloy: int, fuel: int) -> String:
+	var need := []
+	if players[p].alloy < alloy:
+		need.append("%d more Alloy" % (alloy - players[p].alloy))
+	if players[p].fuel < fuel:
+		need.append("%d more Fuel" % (fuel - players[p].fuel))
+	return "" if need.is_empty() else "Need " + " and ".join(need)
+
+
+func _cmd_build(p: int, cmd: Dictionary) -> String:
+	var type: String = cmd.get("building", "")
+	var i: int = cmd.get("at", -1)
+	var err := build_problem(p, type, i)
+	if err != "":
+		return err
+	var d := DB.building(type)
+	players[p].alloy -= d.cost_alloy
+	players[p].fuel -= d.cost_fuel
+	var b := place_building(type, i, p, false)
+	update_explored(p)
+	_event(p, "build", [i], { "building": b.id, "type": type, "owner": p })
 	return ""
 
 
