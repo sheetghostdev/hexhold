@@ -15,8 +15,12 @@ func _ready() -> void:
 	if Net.is_web():
 		_hash_cb = JavaScriptBridge.create_callback(_on_hash_change)
 		JavaScriptBridge.get_interface("window").addEventListener("hashchange", _hash_cb)
+	var join := _join_code()
 	var code := Net.code_from_location()
-	if code != "":
+	if join != "":
+		show_menu()
+		join_online(join)
+	elif code != "":
 		open_code(code)
 	else:
 		show_menu()
@@ -39,12 +43,24 @@ func _tune_performance() -> void:
 
 
 func _on_hash_change(_args: Array) -> void:
+	var join := _join_code()
+	if join != "":
+		_clear()
+		show_menu()
+		join_online(join)
+		return
 	var code := Net.code_from_location()
 	if code != "":
 		open_code(code)
 
 
 func _clear() -> void:
+	if net:
+		net.queue_free()
+		net = null
+	if link:
+		link.queue_free()
+		link = null
 	if match_screen:
 		match_screen.queue_free()
 		match_screen = null
@@ -66,6 +82,7 @@ func show_menu() -> void:
 	add_child(menu)
 	menu.start_game.connect(_on_start_game)
 	menu.start_match.connect(_on_start_match)
+	menu.host_online.connect(host_online)
 	menu.open_entry.connect(_on_open_entry)
 	menu.open_code.connect(open_code)
 
@@ -116,11 +133,130 @@ func _on_start_match() -> void:
 		var sd = JavaScriptBridge.eval("new URLSearchParams(location.search).get('seed') || ''", true)
 		if sd is String and sd.is_valid_int():
 			setup["seed"] = sd.to_int()
-	var m := MatchGen.create(setup)
+	var l := AiLink.new(MatchGen.create(setup))
+	_play_match(l, l.first_sync())
+
+
+var net: NetPeer
+var link: MatchLink
+
+
+func _play_match(l: MatchLink, first: Dictionary) -> void:
+	if menu:
+		menu.queue_free()
+		menu = null
+	if match_screen:
+		match_screen.queue_free()
+	_hide_backdrop()
+	link = l
+	if link.get_parent() == null:
+		add_child(link)
 	match_screen = MatchScreen.new()
 	add_child(match_screen)
 	match_screen.quit_to_menu.connect(show_menu)
-	match_screen.start(m, 0)
+	match_screen.start(link, first)
+
+
+func _my_name(default: String) -> String:
+	return String(Storage.get_setting("my_name", default)).left(16)
+
+
+## Online: this browser hosts the match and shares an invite link.
+func host_online() -> void:
+	var code := NetPeer.new_code()
+	net = NetPeer.new()
+	add_child(net)
+	var hl := HostLink.new(net, _my_name("Player 1"))
+	add_child(hl)
+	link = hl
+	var url := Net.base_url() + "#join=" + code
+	var v := UI.vbox(16)
+	var t := UI.label("Invite a friend", "Title", true)
+	t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	t.add_theme_font_size_override("font_size", 40)
+	v.add_child(t)
+	var info := UI.label("Send this link to your friend (Discord works great). The match starts when they open it. Keep this page open.", "", true)
+	v.add_child(info)
+	var lk := UI.label(url, "Small", true)
+	lk.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	v.add_child(lk)
+	var state := UI.label("Getting ready...", "Small", true)
+	state.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	state.add_theme_color_override("font_color", UI.ACCENT)
+	v.add_child(state)
+	var share_txt := "Join my Hexhold match! %s" % url
+	var share := UI.button("Share invite", func():
+		if not Net.share("Hexhold match", share_txt):
+			state.text = "Link copied! Paste it in Discord."
+		, "PrimaryButton", 84)
+	share.disabled = true
+	v.add_child(share)
+	var copy := UI.button("Copy link", func():
+		Net.copy(share_txt)
+		state.text = "Link copied! Paste it in Discord."
+		, "", 76)
+	copy.disabled = true
+	v.add_child(copy)
+	v.add_child(UI.button("Cancel", func():
+		_clear()
+		show_menu()
+		, "GhostButton", 70))
+	menu._modal(v)
+	net.ready_to_host.connect(func():
+		share.disabled = false
+		copy.disabled = false
+		state.text = "Waiting for your friend to open the link...")
+	net.failed.connect(func(why: String):
+		state.text = _net_error(why)
+		state.add_theme_color_override("font_color", UI.BAD))
+	hl.guest_joined.connect(func(): _play_match(hl, hl.first_sync()))
+	net.host(code)
+
+
+## Online: opened an invite link, connect to the host's browser.
+func join_online(code: String) -> void:
+	Net.clear_location_code()
+	net = NetPeer.new()
+	add_child(net)
+	var gl := GuestLink.new(net, _my_name("Player 2"))
+	add_child(gl)
+	link = gl
+	var v := UI.vbox(16)
+	var state := UI.label("Joining your friend's match...", "", true)
+	state.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	v.add_child(state)
+	v.add_child(UI.button("Cancel", func():
+		_clear()
+		show_menu()
+		, "GhostButton", 70))
+	menu._modal(v)
+	net.failed.connect(func(why: String):
+		state.text = _net_error(why)
+		state.add_theme_color_override("font_color", UI.BAD))
+	gl.started_first.connect(func(rep: Dictionary): _play_match(gl, rep))
+	net.join(code)
+
+
+func _net_error(why: String) -> String:
+	match why:
+		"peer-unavailable":
+			return "That match isn't open any more. Ask your friend for a new link (their page must stay open)."
+		"network-library", "network", "server-error", "socket-error", "socket-closed":
+			return "Couldn't reach the internet match service. Check your connection and try again."
+		"browser-incompatible":
+			return "This browser can't play online. Try Chrome or Safari."
+		"unavailable-id":
+			return "That invite code is busy. Go back and try again."
+	return "Connection problem (%s). Try again." % why
+
+
+func _join_code() -> String:
+	if not Net.is_web():
+		return ""
+	var h = JavaScriptBridge.eval("window.location.hash || ''", true)
+	if h is String and h.begins_with("#join="):
+		return h.substr(6).strip_edges().left(12)
+	return ""
 
 
 func _on_start_game(gs: GameState, local: int) -> void:

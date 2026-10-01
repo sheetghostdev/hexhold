@@ -5,7 +5,7 @@ extends Node
 
 signal quit_to_menu
 
-var host: MatchHost
+var link: MatchLink
 var m: MatchState
 var me := 0
 var board: MatchBoard
@@ -30,6 +30,7 @@ const TAP_SLOP := 14.0
 
 
 var _debug := false
+var _auto_ended := false
 
 
 func _ready() -> void:
@@ -43,16 +44,27 @@ func _ready() -> void:
 	hud.setup(self)
 
 
-func start(state: MatchState, local_player: int) -> void:
-	host = MatchHost.new(state)
-	me = local_player
+func start(l: MatchLink, first: Dictionary) -> void:
+	link = l
+	me = link.me
+	link.turn_started.connect(_on_turn_started)
+	link.updated.connect(_on_updated)
+	link.restarted.connect(_on_restarted)
+	link.status.connect(func(t: String, bad: bool): hud.toast(t, UI.BAD if bad else UI.ACCENT))
 	m = MatchState.new()
-	m.load_view(host.sync(me)["view"])
+	m.load_view(first["view"])
 	board.set_match(m, me)
 	var hq := m.hq_of(me)
 	board.look_at_tile(hq.idx if hq else m.center, false, m.center)
 	hud.refresh_all()
-	hud.toast("Your turn! Destroy the enemy Home Base.", UI.ACCENT)
+	_turn_toast()
+
+
+func _turn_toast() -> void:
+	if m.cur == me:
+		hud.toast("Your turn! Destroy the enemy Home Base.", UI.ACCENT)
+	else:
+		hud.toast("%s goes first." % link.opponent_name(), UI.ACCENT)
 
 
 func my_turn() -> bool:
@@ -236,7 +248,9 @@ func reselect() -> void:
 
 ## Sends a command to the host and plays back what came of it.
 func _send(cmd: Dictionary) -> Dictionary:
-	var res := host.submit(me, cmd)
+	busy = true
+	var res: Dictionary = await link.submit(cmd)
+	busy = false
 	if not res["ok"]:
 		hud.toast(res["error"], UI.BAD)
 		Sfx.play("error")
@@ -261,7 +275,7 @@ func _play(res: Dictionary) -> void:
 
 
 func do_move(u: MatchState.UnitS, to: int) -> void:
-	var res := _send({ "type": "move", "unit": u.id, "to": to })
+	var res := await _send({ "type": "move", "unit": u.id, "to": to })
 	if not res["ok"]:
 		return
 	await _play(res)
@@ -273,7 +287,7 @@ func do_move(u: MatchState.UnitS, to: int) -> void:
 
 func do_attack(target: int) -> void:
 	var u := sel_unit
-	var res := _send({ "type": "attack", "unit": u.id, "target": target })
+	var res := await _send({ "type": "attack", "unit": u.id, "target": target })
 	if not res["ok"]:
 		return
 	await _play(res)
@@ -286,7 +300,7 @@ func do_attack(target: int) -> void:
 
 func do_clear(target: int) -> void:
 	var u := sel_unit
-	var res := _send({ "type": "clear", "unit": u.id, "target": target })
+	var res := await _send({ "type": "clear", "unit": u.id, "target": target })
 	if not res["ok"]:
 		return
 	await _play(res)
@@ -294,7 +308,7 @@ func do_clear(target: int) -> void:
 
 
 func do_research(id: String) -> void:
-	var res := _send({ "type": "research", "upgrade": id })
+	var res := await _send({ "type": "research", "upgrade": id })
 	if not res["ok"]:
 		return
 	Sfx.play("coin")
@@ -304,7 +318,7 @@ func do_research(id: String) -> void:
 
 
 func do_train(b: MatchState.Building, unit_id: String) -> void:
-	var res := _send({ "type": "train", "building": b.id, "unit": unit_id })
+	var res := await _send({ "type": "train", "building": b.id, "unit": unit_id })
 	if not res["ok"]:
 		return
 	Sfx.play("coin")
@@ -336,7 +350,7 @@ func build_back() -> void:
 
 func confirm_build() -> void:
 	var at := sel_tile
-	var res := _send({ "type": "build", "building": preview_type, "at": at })
+	var res := await _send({ "type": "build", "building": preview_type, "at": at })
 	if not res["ok"]:
 		return
 	Sfx.play("coin")
@@ -355,20 +369,66 @@ func end_turn() -> void:
 		return
 	deselect()
 	Sfx.play("turn")
-	var res := host.submit(me, { "type": "end_turn" })
+	var res := await _send({ "type": "end_turn" })
 	await _play(res)
-	busy = true
 	hud.refresh_all()
-	host.run_ai_turns()
-	var rep := host.sync(me)
-	await _replay(rep["events"])
+	link.after_my_turn()
+
+
+## The opponent finished: replay what we saw of it, then it's our turn.
+var _turn_queue: Array = []
+var _turn_busy := false
+
+
+func _on_turn_started(rep: Dictionary) -> void:
+	_turn_queue.append(rep)
+	if _turn_busy:
+		return
+	_turn_busy = true
+	while not _turn_queue.is_empty():
+		while busy:
+			await get_tree().process_frame
+		var r: Dictionary = _turn_queue.pop_front()
+		busy = true
+		deselect()
+		await _replay(r["events"])
+		m.load_view(r["view"])
+		busy = false
+		board.refresh()
+		hud.refresh_all()
+		if not _check_over() and m.cur == me:
+			Sfx.play("turn")
+			Net.vibrate(40)
+			hud.toast("Your turn!", UI.ACCENT)
+	_turn_busy = false
+
+
+func _on_updated(rep: Dictionary) -> void:
+	while busy:
+		await get_tree().process_frame
 	m.load_view(rep["view"])
-	busy = false
+	deselect()
 	board.refresh()
 	hud.refresh_all()
-	if _check_over():
-		return
-	hud.toast("Your turn!", UI.ACCENT)
+	if m.cur != me and m.winner < 0:
+		hud.toast("Time's up! Turn over.", UI.BAD)
+
+
+func _on_restarted(rep: Dictionary) -> void:
+	hud.close_modal()
+	m = MatchState.new()
+	m.load_view(rep["view"])
+	board.set_match(m, me)
+	var hq := m.hq_of(me)
+	board.look_at_tile(hq.idx if hq else m.center, false, m.center)
+	deselect()
+	hud.refresh_all()
+	_turn_toast()
+
+
+func rematch() -> void:
+	hud.toast("Rematch requested..." if link is GuestLink else "New match!", UI.ACCENT)
+	link.rematch()
 
 
 func _check_over() -> bool:
@@ -554,30 +614,54 @@ func _follow(i: int) -> void:
 func _debug_cmd(c) -> void:
 	if not c is Dictionary:
 		return
+	if c.has("end_match"):
+		var h2 = link.get("host")
+		if h2 == null:
+			return
+		h2.m._decide_by_score()
+		if link is HostLink:
+			link._after(0, {})
+		_on_turn_started(h2.sync(me))
+		return
 	if c.has("cheat"):
-		host.m.players[me].alloy += int(c["cheat"])
-		host.m.players[me].fuel += int(c["cheat"])
-		m.load_view(host.sync(me)["view"])
+		var h = link.get("host")
+		if h == null:
+			return
+		h.m.players[me].alloy += int(c["cheat"])
+		h.m.players[me].fuel += int(c["cheat"])
+		m.load_view(h.sync(me)["view"])
 	elif c.has("build_any"):
 		# build on the n-th free hex of your territory
 		var n := int(c.get("n", 0))
 		for i in m.n_tiles():
 			if m.build_problem(me, c["build_any"], i) == "":
 				if n == 0:
-					m.load_view(_send({ "type": "build", "building": c["build_any"], "at": i })["view"])
+					var r1 := await _send({ "type": "build", "building": c["build_any"], "at": i })
+					m.load_view(r1["view"])
 					break
 				n -= 1
 	else:
 		for k in c:
 			if c[k] is float:
 				c[k] = int(c[k])
-		m.load_view(_send(c)["view"])
+		var r2 := await _send(c)
+		m.load_view(r2["view"])
 	board.refresh()
 	hud.refresh_all()
 
 
 ## Test hook (?debug in the URL): screen positions of tiles and units.
 func _process(_delta: float) -> void:
+	if m != null and link != null:
+		var t := link.time_left()
+		hud.show_timer(t)
+		if t == 0.0 and m.cur == me and m.winner < 0 and not busy and not _auto_ended:
+			_auto_ended = true
+			hud.close_modal()
+			hud.toast("Time's up!", UI.BAD)
+			end_turn()
+		if m.cur != me:
+			_auto_ended = false
 	if not _debug or m == null:
 		return
 	var cmd = JavaScriptBridge.eval("window.__hexCmd || ''", true)

@@ -6,6 +6,7 @@ signal start_game(gs: GameState, local: int)
 signal open_entry(entry: Dictionary)
 signal open_code(text: String)
 signal start_match
+signal host_online
 
 var content: VBoxContainer
 var modal_root: Control
@@ -98,7 +99,8 @@ func show_main() -> void:
 	sub.add_theme_font_size_override("font_size", 24)
 	content.add_child(sub)
 	content.add_child(UI.spacer(18, false))
-	content.add_child(_wide(UI.button("Quick match vs AI", func(): start_match.emit(), "PrimaryButton", 96)))
+	content.add_child(_wide(UI.button("Play a friend online", func(): host_online.emit(), "PrimaryButton", 96)))
+	content.add_child(_wide(UI.button("Quick match vs AI", func(): start_match.emit(), "", 88)))
 	var note := UI.label("New: the military game (in development)", "Small")
 	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	content.add_child(_wide(note))

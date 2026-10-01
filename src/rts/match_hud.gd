@@ -144,7 +144,7 @@ func refresh_all() -> void:
 	if m == null:
 		return
 	var pl := m.players[s.me]
-	turn_label.text = "Turn %d/%d\n%s" % [m.turn, DB.rules.turn_limit, "Your turn" if m.cur == s.me else "Enemy turn"]
+	_turn_text()
 	alloy_label.text = str(pl.alloy)
 	fuel_label.text = str(pl.fuel)
 	var pw := m.power(s.me)
@@ -168,6 +168,29 @@ func refresh_all() -> void:
 	show_selection()
 
 
+var _timer_shown := -2
+
+
+func _turn_text() -> void:
+	var m := s.m
+	var who := "Your turn" if m.cur == s.me else "%s's turn" % s.link.opponent_name()
+	if m.winner >= 0:
+		who = "Match over"
+	var t := s.link.time_left() if s.link else -1.0
+	if t >= 0.0 and m.winner < 0:
+		who += "  %d:%02d" % [int(ceil(t)) / 60, int(ceil(t)) % 60]
+	turn_label.text = "Turn %d/%d\n%s" % [m.turn, DB.rules.turn_limit, who]
+	turn_label.add_theme_color_override("font_color", UI.BAD if t >= 0.0 and t <= 10.0 and m.cur == s.me else UI.TEXT)
+
+
+## Called every frame with the seconds left (-1 = no timer).
+func show_timer(t: float) -> void:
+	var k := int(ceil(t)) if t >= 0.0 else -1
+	if k != _timer_shown:
+		_timer_shown = k
+		_turn_text()
+
+
 func _refresh_bottom() -> void:
 	for c in bottom_box.get_children():
 		c.queue_free()
@@ -181,7 +204,7 @@ func _refresh_bottom() -> void:
 	end.add_theme_font_size_override("font_size", 30)
 	end.disabled = not s.my_turn()
 	if (m.cur != s.me or s.busy) and m.winner < 0:
-		end.text = "Enemy turn..."
+		end.text = "Waiting..." if m.cur == s.me else "%s..." % s.link.opponent_name().left(10)
 	bottom_box.add_child(end)
 
 
@@ -614,15 +637,18 @@ func show_game_over() -> void:
 	_title(v, "Victory!" if won else "Defeat", why, UI.ACCENT if won else UI.BAD)
 	for p in mini(m.players.size(), m.final_scores.size()):
 		v.add_child(UI.label("%s: %d points" % [m.players[p].name, int(m.final_scores[p])], "", true))
-	v.add_child(UI.button("Back to menu", func(): s.quit_to_menu.emit(), "PrimaryButton", 84))
+	v.add_child(UI.button("Rematch", s.rematch, "PrimaryButton", 84))
+	v.add_child(UI.button("Back to menu", func(): s.quit_to_menu.emit(), "", 76))
 	v.add_child(UI.button("Look at the map", close_modal, "GhostButton", 70))
 	modal(v)
 
 
 func _show_menu() -> void:
 	var v := UI.vbox(14)
-	_title(v, "Paused", "Quick match vs AI")
+	_title(v, "Paused" if not s.link.online() else "Menu", "Online match vs %s" % s.link.opponent_name() if s.link.online() else "Quick match vs AI")
 	v.add_child(UI.button("Resume", close_modal, "PrimaryButton", 84))
+	if s.m.winner >= 0:
+		v.add_child(UI.button("Rematch", s.rematch, "", 76))
 	var snd := func():
 		Sfx.set_enabled(not Sfx.is_enabled())
 		_show_menu()
