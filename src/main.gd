@@ -36,8 +36,12 @@ func _clear() -> void:
 		game = null
 
 
+var backdrop: Board
+
+
 func show_menu() -> void:
 	_clear()
+	_show_backdrop()
 	menu = Menu.new()
 	add_child(menu)
 	menu.start_game.connect(_on_start_game)
@@ -45,8 +49,33 @@ func show_menu() -> void:
 	menu.open_code.connect(open_code)
 
 
+## A small living kingdom drifting behind the title screen.
+func _show_backdrop() -> void:
+	if backdrop:
+		return
+	var gs := GameState.create({ "players": [
+		{ "name": "A", "color": 0, "ai": true }, { "name": "B", "color": 1, "ai": true },
+		{ "name": "C", "color": 2, "ai": true }], "size": 1, "seed": randi() % 100000 })
+	for k in 18:
+		AIPlayer.play_turn(gs)
+		gs.end_turn()
+	backdrop = Board.new()
+	add_child(backdrop)
+	move_child(backdrop, 0)
+	backdrop.set_state(gs, -1)
+	backdrop.span = 12.0
+	backdrop.drift = true
+
+
+func _hide_backdrop() -> void:
+	if backdrop:
+		backdrop.queue_free()
+		backdrop = null
+
+
 func _show_game() -> GameScreen:
 	_clear()
+	_hide_backdrop()
 	game = GameScreen.new()
 	add_child(game)
 	game.quit_to_menu.connect(show_menu)

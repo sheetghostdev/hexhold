@@ -4,8 +4,10 @@
 quick, readable 4X turns mixed with Stronghold's castles, walls and economy.
 It's built for phones, and you play with friends by **sending each other a link on Discord**.
 
-Made with Godot 4.7 (GDScript, Compatibility renderer). All art and sound are
-generated in code, so there are no image or audio files to manage.
+Made with Godot 4.7 (GDScript, Compatibility renderer so it runs in phone browsers).
+The world is **3D low-poly** in bright colours, like Polytopia: hex tiles, trees,
+mountains, castles, walls and little soldiers, all generated in code with flat-shaded
+procedural meshes. There are no model, image or audio files to manage.
 
 ## How a game with your brothers works
 
@@ -72,6 +74,8 @@ inside a frame, links can't jump straight into a turn. Players use
   `build/web` with any static server (e.g. `python3 -m http.server -d build/web`).
 - Tests (rules, save links, AI-vs-AI games):
   `godot --headless --script res://tests/run_tests.gd`
+- Add `?debug` to the web address to enable `window.hexDebug()`, which reports
+  where tiles and units are on screen (used for automated UI tests).
 
 ## Project layout
 
@@ -82,14 +86,15 @@ inside a frame, links can't jump straight into a turn. Players use
 | `src/mapgen.gd` | Map generation. |
 | `src/codec.gd` | Packs a game into a compact URL-safe code (binary + deflate + base64url). |
 | `src/ai.gd` | Computer opponent. |
-| `src/board.gd` | Draws the map, roads, walls, towns, units, fog and effects. |
+| `src/board.gd` | The 3D map: batches terrain, roads, walls, towns, units, clouds and effects; tilted orthographic camera with pan and pinch-zoom. |
+| `src/lowpoly.gd` | Builds every low-poly mesh in code (tiles, trees, castle, units, ...). |
 | `src/game_screen.gd` | Touch input, camera, actions, undo, animations, turn hand-off. |
 | `src/hud.gd` | In-game UI: resource bar, context card, toolbar, pop-ups. |
 | `src/menu.gd` | Title screen, new game setup, saved games, opening links. |
 | `src/net.gd` | Browser glue: reading the link, share sheet, clipboard. |
 | `src/storage.gd` | Local saves and settings. |
 | `src/sfx.gd` | Synthesized sound effects. |
-| `src/ui/*` | Theme, icons and help text. |
+| `src/ui/*` | Theme, 2D UI icons and help text. |
 
 ## Ideas for later
 

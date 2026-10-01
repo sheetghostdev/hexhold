@@ -1,24 +1,26 @@
 class_name Board
-extends Node2D
-## Draws the map: terrain, borders, roads, walls, towns, units, fog,
-## highlights and floating combat numbers.
+extends Node3D
+## The 3D map: low-poly terrain, roads, walls, towns and units, lit by a
+## sun and seen through a tilted orthographic camera (Polytopia style).
+## Map positions are the 2D hex pixel coordinates from Hex/GameState;
+## world = Vector3(map.x / Hex.SIZE, height, map.y / Hex.SIZE).
 
-const R := Hex.SIZE
-const DEPTH := 11.0
+const PITCH := 0.95  # camera tilt below horizontal (radians, ~54°)
+const MIN_SPAN := 4.5
+const UNIT_SCALE := 1.75
+const MAX_SPAN := 26.0
 
 const TERRAIN_COL := [
-	Color("#3f8fc9"),  # water
-	Color("#8cc265"),  # plains
-	Color("#5f9e4a"),  # forest
-	Color("#a9b55e"),  # hills
-	Color("#8f8a83"),  # mountain
+	Color("#38b6ee"),  # water (shallow)
+	Color("#84e03a"),  # plains
+	Color("#55cc35"),  # forest floor
+	Color("#bfe052"),  # hills
+	Color("#a7b0b8"),  # mountain base
 ]
-const SIDE_COL := Color("#6b5137")
-const FOG_COL := Color("#2a3c4a")
-const ROAD_DARK := Color("#6b4a2b")
-const ROAD_LIGHT := Color("#d2ae76")
-const WALL_STONE := Color("#d6cfbf")
-const WALL_DARK := Color("#8c8576")
+const TERRAIN_H := [-0.16, 0.0, 0.0, 0.1, 0.14]
+const FOG_TILE := Color("#cfdbe8")
+const OCEAN := Color("#1f86d6")
+const NEUTRAL_ROOF := Color("#c0623a")
 
 var gs: GameState
 var viewer := 0
@@ -34,36 +36,147 @@ var plan_kind := ""
 var plan_ok := {}
 var capture_hint := -1
 
-# animation
-var unit_pos := {}  # Unit -> Vector2 (only while animating)
-var fx: Array = []  # floating texts
-var _time := 0.0
+# animation: Unit -> map position (Vector2) while it moves
+var unit_pos := {}
 
-var terrain_layer: Node2D
-var overlay_layer: Node2D
-var unit_layer: Node2D
-var fx_layer: Node2D
+# camera
+var cam: Camera3D
+var focus := Vector3.ZERO
+var span := 8.5
+var _cam_tween: Tween
+
+# rendering
+var mat_solid: StandardMaterial3D
+var mat_water: StandardMaterial3D
+var mat_overlay: StandardMaterial3D
+var mat_ghost: StandardMaterial3D
+var mat_blob: StandardMaterial3D
+var mat_cloud: StandardMaterial3D
+var team_mats := {}
+var mmi := {}       # key -> MultiMeshInstance3D
+var batch := {}     # key -> [Array[Transform3D], PackedColorArray]
+var unit_nodes := {}  # Unit -> Node3D
+var labels_root: Node3D
+var fx_root: Node3D
+var clouds_root: Node3D
 var font: Font
+var _time := 0.0
+var drift := false  # slow cinematic camera (menu backdrop)
 
 
 func _ready() -> void:
 	font = UI.body_font if UI.body_font else ThemeDB.fallback_font
-	terrain_layer = _layer(_draw_terrain)
-	overlay_layer = _layer(_draw_overlay)
-	unit_layer = _layer(_draw_units)
-	fx_layer = _layer(_draw_fx)
+	_setup_materials()
+	_setup_world()
+	labels_root = Node3D.new()
+	add_child(labels_root)
+	fx_root = Node3D.new()
+	add_child(fx_root)
+	get_viewport().size_changed.connect(_apply_camera)
 
 
-func _layer(cb: Callable) -> Node2D:
-	var n := Node2D.new()
-	add_child(n)
-	n.draw.connect(cb.bind(n))
-	return n
+func _setup_materials() -> void:
+	mat_solid = StandardMaterial3D.new()
+	mat_solid.vertex_color_use_as_albedo = true
+	mat_solid.vertex_color_is_srgb = true
+	mat_solid.roughness = 0.85
+	mat_solid.metallic_specular = 0.25
+	mat_solid.cull_mode = BaseMaterial3D.CULL_DISABLED
+	mat_solid.diffuse_mode = BaseMaterial3D.DIFFUSE_LAMBERT_WRAP
+	mat_water = StandardMaterial3D.new()
+	mat_water.vertex_color_use_as_albedo = true
+	mat_water.vertex_color_is_srgb = true
+	mat_water.roughness = 0.2
+	mat_water.metallic_specular = 0.7
+	mat_overlay = StandardMaterial3D.new()
+	mat_overlay.vertex_color_use_as_albedo = true
+	mat_overlay.vertex_color_is_srgb = true
+	mat_overlay.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat_overlay.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat_overlay.no_depth_test = true
+	mat_overlay.cull_mode = BaseMaterial3D.CULL_DISABLED
+	mat_overlay.render_priority = 2
+	mat_blob = StandardMaterial3D.new()
+	mat_blob.vertex_color_use_as_albedo = true
+	mat_blob.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat_blob.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat_blob.cull_mode = BaseMaterial3D.CULL_DISABLED
+	mat_cloud = StandardMaterial3D.new()
+	mat_cloud.vertex_color_use_as_albedo = true
+	mat_cloud.vertex_color_is_srgb = true
+	mat_cloud.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat_ghost = mat_overlay.duplicate()
+	mat_ghost.no_depth_test = false
+	mat_ghost.render_priority = 1
 
+
+func _setup_world() -> void:
+	var env := WorldEnvironment.new()
+	var e := Environment.new()
+	e.background_mode = Environment.BG_COLOR
+	e.background_color = OCEAN.darkened(0.1)
+	e.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	e.ambient_light_color = Color("#cfe3ff")
+	e.ambient_light_energy = 0.55
+	e.tonemap_mode = Environment.TONE_MAPPER_LINEAR
+	env.environment = e
+	add_child(env)
+	var sun := DirectionalLight3D.new()
+	sun.rotation = Vector3(deg_to_rad(-58), deg_to_rad(-38), 0)
+	sun.light_energy = 1.2
+	sun.light_color = Color("#fff4e0")
+	sun.shadow_enabled = false  # blob shadows instead: cheaper on phones
+	sun.shadow_opacity = 0.55
+	sun.shadow_blur = 1.5
+	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS
+	sun.directional_shadow_max_distance = 80.0
+	sun.shadow_bias = 0.04
+	sun.shadow_normal_bias = 1.0
+	add_child(sun)
+	var ocean := MeshInstance3D.new()
+	var pm := PlaneMesh.new()
+	pm.size = Vector2(400, 400)
+	ocean.mesh = pm
+	var om := StandardMaterial3D.new()
+	om.albedo_color = OCEAN
+	om.roughness = 0.25
+	om.metallic_specular = 0.6
+	ocean.material_override = om
+	ocean.position = Vector3(10, -0.3, 12)
+	ocean.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(ocean)
+	cam = Camera3D.new()
+	cam.projection = Camera3D.PROJECTION_ORTHOGONAL
+	cam.near = 0.5
+	cam.far = 120.0
+	add_child(cam)
+	cam.make_current()
+	clouds_root = Node3D.new()
+	add_child(clouds_root)
+
+
+func _team_mat(color: Color, dim: bool) -> StandardMaterial3D:
+	var key := "%s%s" % [color.to_html(), dim]
+	if team_mats.has(key):
+		return team_mats[key]
+	var m := mat_solid.duplicate() as StandardMaterial3D
+	m.albedo_color = color if not dim else color.lerp(Color(0.45, 0.45, 0.45), 0.55)
+	team_mats[key] = m
+	return m
+
+
+func _solid_dim() -> StandardMaterial3D:
+	return _team_mat(Color(1, 1, 1), true)
+
+
+# ---------------------------------------------------------------- state
 
 func set_state(state: GameState, view_player: int) -> void:
 	gs = state
 	viewer = view_player
+	for n in unit_nodes.values():
+		n.queue_free()
+	unit_nodes.clear()
 	refresh()
 
 
@@ -71,27 +184,16 @@ func refresh() -> void:
 	if gs == null:
 		return
 	vis = gs.visible_for(viewer)
-	terrain_layer.queue_redraw()
-	overlay_layer.queue_redraw()
-	unit_layer.queue_redraw()
+	_build_static()
+	_sync_units()
+	refresh_overlay()
 
 
 func refresh_overlay() -> void:
-	overlay_layer.queue_redraw()
-	unit_layer.queue_redraw()
-
-
-func _process(delta: float) -> void:
-	_time += delta
-	if selected >= 0 or not targets.is_empty() or not plan.is_empty():
-		overlay_layer.queue_redraw()
-	if not fx.is_empty():
-		for f in fx:
-			f["t"] += delta
-		fx = fx.filter(func(f): return f["t"] < f["life"])
-		fx_layer.queue_redraw()
-	if not unit_pos.is_empty():
-		unit_layer.queue_redraw()
+	if gs == null:
+		return
+	_build_overlay()
+	_update_units()
 
 
 func explored(i: int) -> bool:
@@ -102,495 +204,663 @@ func seen(i: int) -> bool:
 	return viewer < 0 or vis[i] == 1
 
 
-func map_rect() -> Rect2:
-	var a := Hex.offset_to_pixel(0, 0) - Vector2(R, R)
-	var b := Hex.offset_to_pixel(gs.w - 1, gs.h - 1) + Vector2(R * 2, R + DEPTH)
-	return Rect2(a, b - a)
-
-
-func tile_at(world: Vector2) -> int:
-	var o := Hex.pixel_to_offset(world)
+func tile_at(map: Vector2) -> int:
+	var o := Hex.pixel_to_offset(map)
 	return gs.idx_of(o.x, o.y)
 
 
-# ---------------------------------------------------------------- terrain
+func height(i: int) -> float:
+	if i < 0:
+		return 0.0
+	return TERRAIN_H[gs.terrain[i]] if explored(i) else 0.05
 
-func _shade(i: int) -> float:
-	return float(GameState.mix(gs.map_seed, i, 3) % 1000) / 1000.0
+
+func world(i: int) -> Vector3:
+	var c := gs.center(i) / Hex.SIZE
+	return Vector3(c.x, height(i), c.y)
 
 
-func _draw_terrain(ci: Node2D) -> void:
-	if gs == null:
-		return
+func map_to_world(p: Vector2, y: float = 0.0) -> Vector3:
+	return Vector3(p.x / Hex.SIZE, y, p.y / Hex.SIZE)
+
+
+## Where a unit stands on a tile (map coords): beside the keep on towns.
+func rest_pos(i: int) -> Vector2:
+	if gs.town_at.has(i):
+		return gs.center(i) + Vector2(Hex.SIZE * 0.32, Hex.SIZE * 0.22)
+	return gs.center(i)
+
+
+func _color_of(p: int) -> Color:
+	if p < 0 or p >= gs.players.size():
+		return Defs.NEUTRAL_COLOR
+	return Defs.player_color(gs.players[p].color)
+
+
+# ---------------------------------------------------------------- batching
+
+func _add(key: String, xf: Transform3D, col: Color = Color.WHITE) -> void:
+	if not batch.has(key):
+		batch[key] = [[], PackedColorArray()]
+	batch[key][0].append(xf)
+	batch[key][1].append(col)
+
+
+func _flush(keys_prefix: String) -> void:
+	# empty every multimesh with this prefix that got no instances this time
+	for key in mmi:
+		if key.begins_with(keys_prefix) and not batch.has(key):
+			mmi[key].multimesh.instance_count = 0
+	for key in batch:
+		if not key.begins_with(keys_prefix):
+			continue
+		var inst: MultiMeshInstance3D = mmi.get(key)
+		if inst == null:
+			inst = MultiMeshInstance3D.new()
+			var mm := MultiMesh.new()
+			mm.transform_format = MultiMesh.TRANSFORM_3D
+			mm.use_colors = true
+			var mesh_key: String = key.split(":")[1]
+			mm.mesh = LowPoly.get_mesh(mesh_key)
+			inst.multimesh = mm
+			match key.split(":")[0]:
+				"o":
+					inst.material_override = mat_overlay
+					inst.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+				"g":
+					inst.material_override = mat_ghost
+					inst.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+				"c":
+					inst.material_override = mat_cloud
+					inst.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+				"b":
+					inst.material_override = mat_blob
+					inst.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+				"w":
+					inst.material_override = mat_water
+					inst.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+				_:
+					inst.material_override = mat_solid
+			add_child(inst)
+			mmi[key] = inst
+		var xfs: Array = batch[key][0]
+		var cols: PackedColorArray = batch[key][1]
+		var mm2 := inst.multimesh
+		mm2.instance_count = xfs.size()
+		for k in xfs.size():
+			mm2.set_instance_transform(k, xfs[k])
+			mm2.set_instance_color(k, cols[k])
+	for key in batch.keys():
+		if key.begins_with(keys_prefix):
+			batch.erase(key)
+
+
+static func _xf(pos: Vector3, yaw: float = 0.0, s: float = 1.0) -> Transform3D:
+	return Transform3D(Basis(Vector3.UP, yaw).scaled(Vector3(s, s, s)), pos)
+
+
+func _rand(i: int, k: int) -> float:
+	return float(GameState.mix(gs.map_seed, i, k) % 10000) / 10000.0
+
+
+## yaw that turns +X toward a map direction
+static func _yaw_to(d: Vector3) -> float:
+	return atan2(-d.z, d.x)
+
+
+# ---------------------------------------------------------------- static scene
+
+func _build_static() -> void:
+	for c in labels_root.get_children():
+		c.queue_free()
+	for c in clouds_root.get_children():
+		c.queue_free()
 	var n := gs.n_tiles()
-	# 1. tiles, row by row so lower rows overlap the depth of upper ones
 	for i in n:
+		var c := world(i)
 		if not explored(i):
+			_add("s:hex", _xf(Vector3(c.x, 0.05, c.z)), FOG_TILE.darkened(_rand(i, 1) * 0.05))
+			var cloud := _xf(Vector3(c.x + (_rand(i, 2) - 0.5) * 0.3, 0.42 + _rand(i, 3) * 0.12, c.z), _rand(i, 4) * TAU, 0.95 + _rand(i, 5) * 0.25)
+			_add("c:cloud", cloud)
 			continue
-		_draw_tile(ci, i)
-	# 2. territory tint + borders
-	for i in n:
-		if explored(i):
-			_draw_territory(ci, i)
-	# 3. roads
-	_draw_roads(ci, func(i): return gs.road[i] != 0, 1.0)
-	# 4. buildings, walls, towns
-	for i in n:
-		if not explored(i):
-			continue
-		var b := gs.building[i]
-		if b == Defs.B.WALL or b == Defs.B.TOWER:
-			_draw_structure(ci, i)
-		elif b != Defs.B.NONE:
-			var owner := gs.tile_owner(i)
-			Icons.building(ci, b, gs.center(i) + Vector2(0, 6), R * 0.95, Defs.player_color(_color_of(owner)))
-		var t := gs.town_on(i)
-		if t:
-			_draw_town(ci, t)
-	# 5. fog
-	for i in n:
-		if not explored(i):
-			_draw_cloud(ci, i)
-		elif not seen(i):
-			ci.draw_colored_polygon(Hex.corners(gs.center(i), R + 0.5), Color(0.08, 0.12, 0.18, 0.38))
-	# 6. town labels on top of fog edges
+		var dim := 1.0 if seen(i) else 0.62
+		_tile(i, c, dim)
+	_flush("s:")
+	_flush("w:")
+	_flush("b:")
+	_flush("c:")
 	for t in gs.towns:
 		if explored(t.idx):
-			_draw_town_label(ci, t)
+			_town_label(t)
 
 
-func _color_of(p: int) -> int:
-	if p < 0 or p >= gs.players.size():
-		return -1
-	return gs.players[p].color
+func _tint(col: Color, dim: float) -> Color:
+	return Color(col.r * dim, col.g * dim, col.b * dim, col.a)
 
 
-func _draw_tile(ci: Node2D, i: int) -> void:
-	var c := gs.center(i)
+func _tile(i: int, c: Vector3, dim: float) -> void:
 	var ter := gs.terrain[i]
+	var owner := gs.tile_owner(i)
 	var base: Color = TERRAIN_COL[ter]
-	var v := _shade(i)
-	base = base.lightened(v * 0.08) if v > 0.5 else base.darkened((0.5 - v) * 0.12)
+	var v := _rand(i, 0)
+	base = base.lightened(v * 0.06) if v > 0.5 else base.darkened((0.5 - v) * 0.08)
+	if owner >= 0 and ter != Defs.T.WATER:
+		base = base.lerp(_color_of(owner), 0.1)
 	if ter == Defs.T.WATER:
-		var wc := c + Vector2(0, 5)
-		ci.draw_colored_polygon(Hex.corners(wc, R + 0.6), base)
-		var cols := PackedColorArray()
-		var pts := Hex.corners(wc, R * 0.98)
-		for k in 6:
-			cols.append(base.lightened(0.12) if pts[k].y < wc.y else base.darkened(0.05))
-		ci.draw_polygon(pts, cols)
-		var wl := Color(1, 1, 1, 0.28)
-		var off := (v - 0.5) * R * 0.4
-		ci.draw_arc(wc + Vector2(-R * 0.25 + off, -R * 0.15), R * 0.18, PI * 1.15, PI * 1.85, 8, wl, 2.5, true)
-		ci.draw_arc(wc + Vector2(R * 0.2 - off, R * 0.25), R * 0.15, PI * 1.15, PI * 1.85, 8, wl, 2.5, true)
-		return
-	# depth side
-	var side := PackedVector2Array()
-	var top := Hex.corners(c, R + 0.6)
-	side.append(top[1])
-	side.append(top[1] + Vector2(0, DEPTH))
-	side.append(top[2] + Vector2(0, DEPTH))
-	side.append(top[3] + Vector2(0, DEPTH))
-	side.append(top[3])
-	side.append(top[2])
-	ci.draw_colored_polygon(side, SIDE_COL.darkened(0.1 + v * 0.1))
-	var cols := PackedColorArray()
-	for k in 6:
-		cols.append(base.lightened(0.1) if top[k].y < c.y else base.darkened(0.06))
-	ci.draw_polygon(top, cols)
-	ci.draw_polyline(top + PackedVector2Array([top[0]]), base.darkened(0.15), 1.5, true)
+		_add("w:water", _xf(c), _tint(base, dim))
+	else:
+		_add("s:hex", _xf(c), _tint(base, dim))
+	var white := _tint(Color.WHITE, dim)
+	var b := gs.building[i]
+	var f := gs.feature[i]
+	var town := gs.town_on(i)
+	# terrain decoration
 	match ter:
 		Defs.T.FOREST:
-			var big := gs.feature[i] == Defs.F.OLD_GROWTH
-			var spots := [Vector2(-0.32, 0.12), Vector2(0.3, 0.18), Vector2(0.0, -0.22), Vector2(-0.05, 0.42)]
-			for k in spots.size():
-				if k == 3 and gs.building[i] != Defs.B.NONE:
-					continue
-				var p: Vector2 = c + spots[k] * R + Vector2((v - 0.5) * 8, 0)
-				_tree(ci, p, R * (0.36 if big else 0.28), base)
+			var count := 5 if f == Defs.F.OLD_GROWTH else 4
+			if b != Defs.B.NONE:
+				count = 2
+			var spots := [Vector2(-0.4, -0.2), Vector2(0.35, -0.3), Vector2(0.05, 0.38), Vector2(-0.25, 0.42), Vector2(0.45, 0.3)]
+			if b != Defs.B.NONE:
+				spots = [Vector2(-0.55, -0.25), Vector2(0.5, -0.38)]
+			for k in mini(count, spots.size()):
+				var p: Vector2 = spots[k] + Vector2(_rand(i, 10 + k) - 0.5, _rand(i, 20 + k) - 0.5) * 0.15
+				var s := (1.1 + _rand(i, 30 + k) * 0.35) * (1.25 if f == Defs.F.OLD_GROWTH else 1.0)
+				var key := "s:pine" if _rand(i, 40 + k) > 0.45 else "s:tree"
+				_add(key, _xf(c + Vector3(p.x, 0, p.y), _rand(i, 50 + k) * TAU, s), white)
+				_shadow(c + Vector3(p.x, 0, p.y), 0.75 * s)
 		Defs.T.HILLS:
-			_hill(ci, c + Vector2(-R * 0.25, R * 0.12), R * 0.42, base)
-			_hill(ci, c + Vector2(R * 0.28, R * 0.3), R * 0.34, base)
+			if b == Defs.B.NONE:
+				var hc := _tint(base.lightened(0.06), 1.0)
+				_add("s:hill", _xf(c + Vector3(-0.28, 0, -0.12), 0.0, 1.0), hc)
+				_add("s:hill", _xf(c + Vector3(0.3, 0, 0.22), 1.0, 0.75), hc)
 		Defs.T.MOUNTAIN:
-			_mountain(ci, c + Vector2(-R * 0.18, R * 0.35), R * 0.75)
-			_mountain(ci, c + Vector2(R * 0.35, R * 0.45), R * 0.5)
-	_draw_feature(ci, i, c)
-
-
-func _tree(ci: Node2D, p: Vector2, s: float, base: Color) -> void:
-	ci.draw_line(p + Vector2(0, s * 0.3), p + Vector2(0, s * 0.75), Color("#6b4a2b"), s * 0.18)
-	var dark := Color("#2f6b34")
-	ci.draw_colored_polygon(PackedVector2Array([p + Vector2(0, -s), p + Vector2(s * 0.62, s * 0.4), p + Vector2(-s * 0.62, s * 0.4)]), dark)
-	ci.draw_colored_polygon(PackedVector2Array([p + Vector2(0, -s), p + Vector2(s * 0.05, s * 0.4), p + Vector2(-s * 0.62, s * 0.4)]), dark.lightened(0.12))
-
-
-func _hill(ci: Node2D, p: Vector2, s: float, base: Color) -> void:
-	var pts := PackedVector2Array()
-	for k in 13:
-		var a := PI + PI * k / 12.0
-		pts.append(p + Vector2(cos(a) * s, sin(a) * s * 0.7))
-	ci.draw_colored_polygon(pts, base.darkened(0.12))
-	var hl := PackedVector2Array()
-	for k in 7:
-		var a := PI + PI * k / 12.0
-		hl.append(p + Vector2(cos(a) * s * 0.9, sin(a) * s * 0.62))
-	hl.append(p + Vector2(0, -s * 0.1))
-	ci.draw_colored_polygon(hl, base.lightened(0.1))
-
-
-func _mountain(ci: Node2D, base_pt: Vector2, s: float) -> void:
-	var peak := base_pt + Vector2(0, -s)
-	var l := base_pt + Vector2(-s * 0.7, 0)
-	var r := base_pt + Vector2(s * 0.7, 0)
-	ci.draw_colored_polygon(PackedVector2Array([peak, r, l]), Color("#6f6a64"))
-	ci.draw_colored_polygon(PackedVector2Array([peak, base_pt + Vector2(s * 0.1, 0), l]), Color("#8d8780"))
-	var snow := PackedVector2Array([peak, peak.lerp(r, 0.3), peak + Vector2(0, s * 0.32), peak.lerp(l, 0.3)])
-	ci.draw_colored_polygon(snow, Color("#f4f4f2"))
-
-
-func _draw_feature(ci: Node2D, i: int, c: Vector2) -> void:
-	match gs.feature[i]:
+			_add("s:mountain", _xf(c + Vector3(-0.1, 0, 0.0), _rand(i, 6) * 0.8 - 0.4, 0.95 + _rand(i, 7) * 0.2), white)
+			_shadow(c + Vector3(0.05, 0, 0.05), 2.6)
+	match f:
 		Defs.F.FERTILE:
-			if gs.building[i] == Defs.B.NONE:
-				for k in 4:
-					var p := c + Vector2(cos(k * 1.7 + 0.4), sin(k * 1.7 + 0.4)) * R * 0.45
-					ci.draw_circle(p, 4.0, Color("#f7e26b"))
-					ci.draw_circle(p, 1.8, Color("#e58a2e"))
+			if b == Defs.B.NONE and town == null:
+				_add("s:flowers", _xf(c, _rand(i, 8) * TAU), white)
 		Defs.F.STONE:
-			if gs.building[i] == Defs.B.NONE:
-				ci.draw_colored_polygon(PackedVector2Array([c + Vector2(-8, 18), c + Vector2(-2, 6), c + Vector2(9, 8), c + Vector2(12, 18)]), Color("#c7c2b8"))
+			if b == Defs.B.NONE:
+				_add("s:rock", _xf(c + Vector3(0.05, 0, 0.35), _rand(i, 9) * TAU), white)
 		Defs.F.GOLD:
-			if gs.building[i] == Defs.B.NONE:
-				for k in 3:
-					Icons.star(ci, c + Vector2(-10 + k * 11, 14 - (k % 2) * 8), 6.0, Icons.GOLD_C)
+			if b == Defs.B.NONE:
+				var off := Vector3(0.3, 0.02, 0.35) if ter == Defs.T.MOUNTAIN else Vector3(0.0, 0.0, 0.32)
+				_add("s:nugget", _xf(c + off, _rand(i, 9) * TAU), white)
 		Defs.F.RUIN:
-			var stone := Color("#d9d2c0")
-			for k in 3:
-				var x := (k - 1) * 15.0
-				var hgt: float = [26.0, 34.0, 18.0][k]
-				ci.draw_rect(Rect2(c + Vector2(x - 5, 16 - hgt), Vector2(10, hgt)), stone)
-				ci.draw_rect(Rect2(c + Vector2(x - 7, 16 - hgt - 4), Vector2(14, 5)), stone.darkened(0.1))
-			ci.draw_rect(Rect2(c + Vector2(-24, 16), Vector2(48, 6)), stone.darkened(0.2))
-			Icons.star(ci, c + Vector2(0, -26 + sin(_time * 2) * 2), 7.0, Icons.GOLD_C)
+			_add("s:ruin", _xf(c, _rand(i, 9) * TAU), white)
 		Defs.F.CAMP:
-			var tent := Color("#a3442f")
-			ci.draw_colored_polygon(PackedVector2Array([c + Vector2(-26, 18), c + Vector2(0, -20), c + Vector2(26, 18)]), tent)
-			ci.draw_colored_polygon(PackedVector2Array([c + Vector2(-6, 18), c + Vector2(0, 2), c + Vector2(6, 18)]), Icons.DARK)
-			ci.draw_line(c + Vector2(0, -20), c + Vector2(0, -32), Icons.DARK, 2)
+			_add("s:tent", _xf(c + Vector3(-0.15, 0, -0.1), 0.3), white)
+	# territory border
+	if owner >= 0:
+		var oc := _tint(_color_of(owner).lightened(0.1), dim)
+		for d in 6:
+			var j := gs.neighbor_dir(i, d)
+			if j >= 0 and gs.tile_owner(j) == owner:
+				continue
+			var dir := _dir_vec(d)
+			var pos := c + dir * 0.79 + Vector3(0, 0.005, 0)
+			var edge_yaw := _yaw_to(dir) + PI / 2
+			_add("s:border", Transform3D(Basis(Vector3.UP, edge_yaw).scaled(Vector3(0.9, 1, 1)), pos), oc)
+	# roads
+	if gs.road[i] != 0 or town != null:
+		_roads(i, c, white)
+	# buildings
+	match b:
+		Defs.B.FARM:
+			_add("s:farm", _xf(c, 0.25 if v > 0.5 else -0.2), white)
+		Defs.B.LUMBER:
+			_add("s:lumber", _xf(c + Vector3(0.05, 0, 0.1), 0.4), white)
+		Defs.B.QUARRY:
+			_add("s:quarry", _xf(c, 0.2), white)
+		Defs.B.MINE:
+			_add("s:mine", _xf(c + Vector3(0, 0, -0.05)), white)
+		Defs.B.MARKET:
+			_add("s:market", _xf(c), white)
+			_add("s:awning", _xf(c), _tint(_color_of(owner), dim))
+		Defs.B.WALL, Defs.B.TOWER:
+			_walls(i, c, owner, dim)
+	if town != null:
+		_town(town, c, dim)
 
 
-func _draw_cloud(ci: Node2D, i: int) -> void:
-	var c := gs.center(i)
-	ci.draw_colored_polygon(Hex.corners(c, R + 1.5), FOG_COL)
-	var v := _shade(i)
-	var puff := Color("#33495a")
-	var hi := Color("#3b5266")
-	var o := Vector2((v - 0.5) * 14.0, 0)
-	ci.draw_circle(c + o + Vector2(-R * 0.3, R * 0.12), R * 0.26, puff)
-	ci.draw_circle(c + o + Vector2(R * 0.28, R * 0.14), R * 0.24, puff)
-	ci.draw_circle(c + o + Vector2(0, -R * 0.02), R * 0.34, puff)
-	ci.draw_circle(c + o + Vector2(-R * 0.06, -R * 0.1), R * 0.2, hi)
+## Soft dark disc under an object, nudged away from the sun.
+func _shadow(pos: Vector3, s: float) -> void:
+	_add("b:blob", Transform3D(Basis().scaled(Vector3(s, 1, s * 0.8)), pos + Vector3(0.05 * s, 0.012, 0.04 * s)), Color(0.05, 0.12, 0.05, 0.28))
 
 
-# ---------------------------------------------------------------- territory
+func _dir_vec(d: int) -> Vector3:
+	var a: Vector2i = Hex.AXIAL_DIRS[d]
+	var v := Vector2(Hex.SQRT3 * (a.x + a.y * 0.5), 1.5 * a.y).normalized()
+	return Vector3(v.x, 0, v.y)
 
-func _draw_territory(ci: Node2D, i: int) -> void:
-	var owner := gs.tile_owner(i)
-	if owner < 0:
-		return
-	var col := Defs.player_color(_color_of(owner))
-	var c := gs.center(i)
-	ci.draw_colored_polygon(Hex.corners(c, R), Color(col, 0.13))
+
+func _roads(i: int, c: Vector3, white: Color) -> void:
+	var water := gs.terrain[i] == Defs.T.WATER
+	var y := 0.0 if water else c.y
+	var any := false
 	for d in 6:
 		var j := gs.neighbor_dir(i, d)
-		if j >= 0 and gs.tile_owner(j) == owner:
+		if j < 0 or not explored(j):
 			continue
-		var edge := _edge(c, d, R - 4.0)
-		ci.draw_line(edge[0], edge[1], col.darkened(0.15), 6.0, true)
-		ci.draw_line(edge[0], edge[1], col.lightened(0.15), 3.0, true)
-
-
-## The two corners of the edge facing direction d.
-func _edge(c: Vector2, d: int, size: float) -> Array:
-	var nb_ax: Vector2i = Hex.AXIAL_DIRS[d]
-	# direction vector from axial step (pointy-top)
-	var v := Vector2(Hex.SQRT3 * (nb_ax.x + nb_ax.y * 0.5), 1.5 * nb_ax.y).normalized()
-	var ang := v.angle()
-	var p1 := c + Vector2.from_angle(ang - PI / 6) * size
-	var p2 := c + Vector2.from_angle(ang + PI / 6) * size
-	return [p1, p2]
-
-
-# ---------------------------------------------------------------- roads & walls
-
-func _road_link(i: int) -> bool:
-	return gs.road[i] != 0 or gs.town_at.has(i)
-
-
-func _draw_roads(ci: Node2D, is_road: Callable, alpha: float) -> void:
-	var segs: Array = []
-	var nodes: Array = []
-	for i in gs.n_tiles():
-		if not is_road.call(i) or not explored(i):
+		var link := gs.road[j] != 0 or gs.town_at.has(j)
+		if not link or (gs.town_at.has(i) and gs.town_at.has(j)):
 			continue
-		var c := gs.center(i)
-		nodes.append(c)
-		for j in gs.neighbors(i):
-			if is_road.call(j) or gs.town_at.has(j) or (_road_link(j) and alpha < 1.0):
-				segs.append([c, (c + gs.center(j)) * 0.5])
-				if gs.town_at.has(j):
-					segs.append([gs.center(j), (c + gs.center(j)) * 0.5])
-	var dark := Color(ROAD_DARK, alpha)
-	var light := Color(ROAD_LIGHT, alpha)
-	for s in segs:
-		ci.draw_line(s[0], s[1], dark, 17.0)
-	for p in nodes:
-		ci.draw_circle(p, 8.5, dark)
-	for s in segs:
-		ci.draw_line(s[0], s[1], light, 10.0)
-		ci.draw_circle(s[1], 5.0, light)
-	for p in nodes:
-		ci.draw_circle(p, 5.0, light)
-	# bridge planks over water
-	for i in gs.n_tiles():
-		if is_road.call(i) and gs.terrain[i] == Defs.T.WATER and explored(i):
-			var c := gs.center(i)
-			for k in 5:
-				var off := Vector2((k - 2) * 7.0, 0)
-				ci.draw_line(c + off + Vector2(0, -9), c + off + Vector2(0, 9), Color(ROAD_DARK, alpha * 0.8), 2.0)
+		if gs.town_at.has(i) and gs.road[j] == 0:
+			continue
+		any = true
+		var key := "s:bridgeseg" if water else "s:roadseg"
+		_add(key, _xf(Vector3(c.x, y + 0.001, c.z), _yaw_to(_dir_vec(d))), white)
+	if not gs.town_at.has(i) and not water:
+		_add("s:roadnode", _xf(Vector3(c.x, y + 0.002, c.z)), white)
+	elif water and not any:
+		_add("s:bridgeseg", _xf(Vector3(c.x - 0.45, y, c.z)), white)
 
 
-func _wall_link(i: int, owner: int) -> bool:
-	if gs.is_structure(i) and gs.tile_owner(i) == owner:
+func _wall_link(j: int, owner: int) -> bool:
+	if gs.is_structure(j) and gs.tile_owner(j) == owner:
 		return true
-	var t := gs.town_on(i)
+	var t := gs.town_on(j)
 	return t != null and t.owner == owner
 
 
-func _draw_structure(ci: Node2D, i: int) -> void:
-	var c := gs.center(i)
-	var owner := gs.tile_owner(i)
-	var col := Defs.player_color(_color_of(owner))
-	var links: Array[Vector2] = []
-	for j in gs.neighbors(i):
-		if _wall_link(j, owner):
-			links.append((c + gs.center(j)) * 0.5)
-	if links.is_empty():
-		links.append(c + Vector2(R * 0.42, 0))
-		links.append(c - Vector2(R * 0.42, 0))
-	var h := 10.0  # wall height (pseudo 3D)
-	var top_c := c - Vector2(0, h)
-	# side faces first, then the tops, so joints look solid
-	for m in links:
-		ci.draw_line(c, m, WALL_DARK.darkened(0.15), 18.0)
-	ci.draw_rect(Rect2(c - Vector2(10, 10), Vector2(20, 14)), WALL_DARK.darkened(0.15))
-	for m in links:
-		var mt: Vector2 = m - Vector2(0, h)
-		ci.draw_line(top_c, mt, WALL_STONE, 16.0)
-		ci.draw_line(top_c + Vector2(0, 6), mt + Vector2(0, 6), WALL_STONE.darkened(0.12), 4.0)
-	ci.draw_rect(Rect2(top_c - Vector2(11, 11), Vector2(22, 20)), WALL_STONE)
-	# crenellations (merlons) along every segment
-	for m in links:
-		var mt: Vector2 = m - Vector2(0, h)
-		var d: Vector2 = mt - top_c
-		var steps := int(d.length() / 9.0)
-		for k in range(1, steps):
-			if k % 2 == 0:
-				continue
-			var p: Vector2 = top_c + d * (float(k) / steps)
-			ci.draw_rect(Rect2(p - Vector2(3.5, 13), Vector2(7, 7)), WALL_STONE.lightened(0.08))
-			ci.draw_rect(Rect2(p - Vector2(3.5, 7), Vector2(7, 1.5)), WALL_DARK)
-	for k in 4:
-		var q := top_c + Vector2(-9 + k * 6, -15)
-		ci.draw_rect(Rect2(q, Vector2(5, 6)), WALL_STONE.lightened(0.08))
+func _walls(i: int, c: Vector3, owner: int, dim: float) -> void:
+	var stone := _tint(Color.WHITE, dim)
+	var links := 0
+	for d in 6:
+		var j := gs.neighbor_dir(i, d)
+		if j >= 0 and _wall_link(j, owner):
+			_add("s:wallseg", _xf(c, _yaw_to(_dir_vec(d))), stone)
+			links += 1
+	if links == 0:
+		_add("s:wallseg", _xf(c, 0.0), stone)
+		_add("s:wallseg", _xf(c, PI), stone)
 	if gs.building[i] == Defs.B.TOWER:
-		var rw := R * 0.34
-		var base := c + Vector2(0, 4)
-		var top := c - Vector2(0, R * 0.62)
-		ci.draw_colored_polygon(Icons._ellipse(base, rw, rw * 0.45, 16), WALL_DARK)
-		ci.draw_rect(Rect2(Vector2(c.x - rw, top.y), Vector2(rw * 2, base.y - top.y)), WALL_STONE.darkened(0.05))
-		ci.draw_rect(Rect2(Vector2(c.x - rw, top.y), Vector2(rw * 0.6, base.y - top.y)), WALL_STONE.lightened(0.06))
-		ci.draw_colored_polygon(Icons._ellipse(top, rw * 1.12, rw * 0.5, 16), WALL_STONE.lightened(0.1))
-		ci.draw_colored_polygon(Icons._ellipse(top, rw * 0.75, rw * 0.3, 16), WALL_DARK)
-		for k in 7:
-			var a := PI * 0.05 + PI * 0.9 * k / 6.0
-			var mp := top + Vector2(cos(a) * rw * 1.0, sin(a) * rw * 0.42)
-			ci.draw_rect(Rect2(mp - Vector2(4, 9), Vector2(8, 9)), WALL_STONE.lightened(0.12))
-		ci.draw_rect(Rect2(c + Vector2(-5, -12), Vector2(10, 16)), Icons.DARK)
-		ci.draw_line(top, top + Vector2(0, -R * 0.55), Icons.DARK, 3.0)
-		ci.draw_colored_polygon(PackedVector2Array([top + Vector2(1, -R * 0.55), top + Vector2(R * 0.42, -R * 0.45), top + Vector2(1, -R * 0.35)]), col)
+		_add("s:tower", _xf(c), stone)
+		_shadow(c, 1.6)
+		_add("s:flag", _xf(c + Vector3(0.0, 1.28, 0)), _tint(_color_of(owner), dim))
 	else:
-		ci.draw_rect(Rect2(top_c + Vector2(-3, -2), Vector2(6, 6)), col)
+		_add("s:wallpost", _xf(c), stone)
 	var maxhp: int = Defs.BUILDINGS[gs.building[i]]["hp"]
 	if gs.bhp[i] < maxhp:
-		_hp_bar(ci, c + Vector2(0, R * 0.55), gs.bhp[i], maxhp, Color("#d6cfbf"))
+		_label(c + Vector3(0, 1.0, 0), "%d/%d" % [gs.bhp[i], maxhp], Color("#ffd7a8"), 34)
 
 
-# ---------------------------------------------------------------- towns
-
-func _draw_town(ci: Node2D, t: GameState.Town) -> void:
-	var c := gs.center(t.idx)
-	var owner_col := Defs.player_color(_color_of(t.owner)) if t.owner >= 0 else Color("#8d6e53")
-	var wall := Color("#efe6d2") if t.owner >= 0 else Color("#cdbfa6")
-	if t.walls:
-		var ring := PackedVector2Array()
-		for k in 25:
-			ring.append(c + Vector2.from_angle(TAU * k / 24.0) * Vector2(R * 0.78, R * 0.68))
-		ci.draw_polyline(ring, WALL_DARK, 12.0, true)
-		ci.draw_polyline(ring, WALL_STONE, 8.0, true)
-	var spots := [Vector2(-0.38, 0.05), Vector2(0.38, 0.1), Vector2(-0.1, 0.32), Vector2(0.18, -0.28), Vector2(-0.45, -0.32), Vector2(0.48, -0.25)]
+func _town(t: GameState.Town, c: Vector3, dim: float) -> void:
+	var roof := _tint(_color_of(t.owner) if t.owner >= 0 else NEUTRAL_ROOF, dim)
+	var white := _tint(Color.WHITE, dim)
+	var spots := [Vector3(-0.42, 0, 0.18), Vector3(0.05, 0, -0.45), Vector3(-0.45, 0, -0.28),
+		Vector3(0.42, 0, -0.25), Vector3(-0.1, 0, 0.5), Vector3(0.5, 0, 0.5)]
 	var count := mini(t.level + 1, spots.size())
+	var start := 0
 	if t.capital:
-		for k in range(1, count):
-			Icons.house(ci, c + spots[k] * R + Vector2(0, -4), R * 0.24, wall, owner_col.darkened(0.15))
-		Icons.castle(ci, c + Vector2(-R * 0.08, -R * 0.06), R * 0.62, Color("#e2dacb"), owner_col)
-	else:
-		for k in count:
-			Icons.house(ci, c + spots[k] * R + Vector2(0, -6), R * 0.26, wall, owner_col.darkened(0.1))
+		_add("s:keep", _xf(c + Vector3(-0.08, 0, -0.08)), white)
+		_shadow(c + Vector3(-0.08, 0, -0.08), 1.9)
+		_add("s:flag", _xf(c + Vector3(-0.08, 1.2, -0.08)), roof)
+		start = 1
+	for k in range(start, count + start):
+		var p: Vector3 = spots[k % spots.size()]
+		var yaw := (_rand(t.idx, 60 + k) - 0.5) * 0.6
+		var s := 1.15 + _rand(t.idx, 70 + k) * 0.25
+		_add("s:house", _xf(c + p, yaw, s), white)
+		_shadow(c + p, 0.9 * s)
+		_add("s:roof", _xf(c + p, yaw, s), roof)
+	if t.walls:
+		_add("s:townwall", _xf(c), white)
+	if not t.capital and t.owner >= 0:
+		# a banner pole marks owned towns
+		_add("s:flag", _xf(c + Vector3(-0.05, 0.75, -0.05)), roof)
+		_add("s:pole", _xf(c + Vector3(-0.05, 0.0, -0.05)), white)
 
 
-func _draw_town_label(ci: Node2D, t: GameState.Town) -> void:
-	var c := gs.center(t.idx) + Vector2(0, R * 0.86)
-	var fs := 17
-	var text := t.name
-	var tw := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
-	var col := Defs.player_color(_color_of(t.owner)) if t.owner >= 0 else Color("#6b6158")
-	var rect := Rect2(c - Vector2(tw / 2 + 10, 12), Vector2(tw + 20, 24))
-	ci.draw_rect(Rect2(rect.position + Vector2(0, 2), rect.size), Color(0, 0, 0, 0.35))
-	ci.draw_rect(rect, col.darkened(0.2))
-	ci.draw_string(font, Vector2(rect.position.x + 10, c.y + 6), text, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color.WHITE)
-	# level pips
+func _town_label(t: GameState.Town) -> void:
+	var c := world(t.idx)
+	var col := _color_of(t.owner) if t.owner >= 0 else Color("#e8e2d6")
+	var pips := ""
 	for k in t.level:
-		var px := c.x - (t.level - 1) * 6.0 + k * 12.0
-		ci.draw_circle(Vector2(px, c.y + 18), 4.5, Color(0, 0, 0, 0.45))
-		ci.draw_circle(Vector2(px, c.y + 17), 3.5, Icons.GOLD_C if t.capital else Color.WHITE)
+		pips += "•"
+	var l := _label(c + Vector3(0, 0.05, 0.78), t.name, Color.WHITE, 44)
+	l.outline_modulate = col.darkened(0.45) if t.owner >= 0 else Color("#4a4038")
+	l.outline_size = 16
+	var p := _label(c + Vector3(0, -0.05, 0.98), pips, Icons.GOLD_C if t.capital else Color.WHITE, 56)
+	p.outline_size = 10
+
+
+func _label(pos: Vector3, text: String, col: Color, size: int) -> Label3D:
+	var l := Label3D.new()
+	l.text = text
+	l.font = font
+	l.font_size = size
+	l.pixel_size = 0.006
+	l.modulate = col
+	l.outline_size = 12
+	l.outline_modulate = Color(0, 0, 0, 0.75)
+	l.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	l.no_depth_test = true
+	l.render_priority = 3
+	l.outline_render_priority = 2
+	l.position = pos
+	labels_root.add_child(l)
+	return l
 
 
 # ---------------------------------------------------------------- overlay
 
-func _draw_overlay(ci: Node2D) -> void:
-	if gs == null:
-		return
-	var pulse := 0.5 + 0.5 * sin(_time * 5.0)
+func _build_overlay() -> void:
+	var lift := 0.06
 	for i in reach:
-		var c := gs.center(i)
-		ci.draw_colored_polygon(Hex.corners(c, R * 0.92), Color(1, 1, 1, 0.16 + pulse * 0.06))
-		ci.draw_circle(c, 7.0, Color(1, 1, 1, 0.8))
+		_add("o:dot", _xf(world(i) + Vector3(0, lift, 0)), Color(1, 1, 1, 0.9))
 	for i in targets:
-		var c := gs.center(i)
-		var col := Color("#ff4d4d")
-		var rr := R * (0.62 if i != pending_target else 0.7 + pulse * 0.05)
-		ci.draw_arc(c, rr, 0, TAU, 32, col, 5.0, true)
-		for k in 4:
-			var a := k * PI / 2 + PI / 4
-			ci.draw_line(c + Vector2.from_angle(a) * rr * 0.75, c + Vector2.from_angle(a) * rr * 1.15, col, 4.0)
+		var s := 1.12 if i == pending_target else 0.95
+		_add("o:ring", _xf(world(i) + Vector3(0, lift, 0), 0.0, s), Color("#ff3b3b"))
+		if i == pending_target:
+			_add("o:hexfill", _xf(world(i) + Vector3(0, lift, 0)), Color(1, 0.2, 0.2, 0.25))
 	if capture_hint >= 0:
-		var c := gs.center(capture_hint)
-		ci.draw_arc(c, R * 0.85, 0, TAU, 32, Color(Icons.GOLD_C, 0.6 + pulse * 0.4), 5.0, true)
+		_add("o:ring", _xf(world(capture_hint) + Vector3(0, lift, 0), 0.0, 1.15), Color(Icons.GOLD_C, 0.95))
 	if selected >= 0:
-		var pts := Hex.corners(gs.center(selected), R - 2)
-		pts.append(pts[0])
-		ci.draw_polyline(pts, Color(1, 1, 1, 0.75 + pulse * 0.25), 5.0, true)
+		_add("o:hexline", _xf(world(selected) + Vector3(0, lift, 0)), Color(1, 1, 1, 0.95))
 	if not plan.is_empty():
 		var plan_set := {}
 		for i in plan:
 			plan_set[i] = true
-		if plan_kind == "road":
-			_draw_roads(ci, func(i): return plan_set.has(i) or gs.road[i] != 0, 0.75)
 		for i in plan:
-			var c := gs.center(i)
+			var c := world(i)
 			var ok: bool = plan_ok.get(i, false)
-			if plan_kind == "wall" and ok:
-				ci.draw_circle(c, 14.0, Color(WALL_STONE, 0.85))
-				for j in gs.neighbors(i):
-					if plan_set.has(j) or _wall_link(j, viewer):
-						ci.draw_line(c, (c + gs.center(j)) * 0.5, Color(WALL_STONE, 0.85), 16.0)
 			if not ok:
-				ci.draw_line(c + Vector2(-12, -12), c + Vector2(12, 12), Color("#ff4d4d"), 5.0)
-				ci.draw_line(c + Vector2(12, -12), c + Vector2(-12, 12), Color("#ff4d4d"), 5.0)
+				_add("o:cross", _xf(c + Vector3(0, lift, 0)), Color("#ff3b3b"))
+				continue
+			if plan_kind == "road":
+				var water := gs.terrain[i] == Defs.T.WATER
+				var y := 0.0 if water else c.y
+				_add("g:roadnode", _xf(Vector3(c.x, y + 0.01, c.z)), Color(1, 1, 1, 0.85))
+				for d in 6:
+					var j := gs.neighbor_dir(i, d)
+					if j >= 0 and (plan_set.has(j) or gs.has_road(j)):
+						_add("g:roadseg", _xf(Vector3(c.x, y + 0.01, c.z), _yaw_to(_dir_vec(d))), Color(1, 1, 1, 0.75))
+			else:
+				_add("g:wallpost", _xf(c), Color(1, 1, 1, 0.7))
+				for d in 6:
+					var j := gs.neighbor_dir(i, d)
+					if j >= 0 and (plan_set.has(j) or _wall_link(j, viewer)):
+						_add("g:wallseg", _xf(c, _yaw_to(_dir_vec(d))), Color(1, 1, 1, 0.7))
+	_flush("o:")
+	_flush("g:")
 
 
 # ---------------------------------------------------------------- units
 
-func unit_draw_pos(u: GameState.Unit) -> Vector2:
-	if unit_pos.has(u):
-		return unit_pos[u]
-	return rest_pos(u.idx)
-
-
-## Where a unit stands on a tile: off to the side on towns so the town shows.
-func rest_pos(i: int) -> Vector2:
-	if gs.town_at.has(i):
-		return gs.center(i) + Vector2(R * 0.36, R * 0.02)
-	return gs.center(i) + Vector2(0, -6)
-
-
-func _draw_units(ci: Node2D) -> void:
-	if gs == null:
-		return
+func _sync_units() -> void:
+	var alive := {}
 	for u in gs.units:
+		alive[u] = true
+		if not unit_nodes.has(u):
+			unit_nodes[u] = _make_unit(u)
+	for u in unit_nodes.keys():
+		if not alive.has(u):
+			_unit_death(unit_nodes[u])
+			unit_nodes.erase(u)
+
+
+func _make_unit(u: GameState.Unit) -> Node3D:
+	var root := Node3D.new()
+	var mi := MeshInstance3D.new()
+	mi.mesh = LowPoly.get_mesh("unit_%d" % u.type)
+	mi.name = "Body"
+	root.add_child(mi)
+	var hp := Label3D.new()
+	hp.name = "HP"
+	hp.font = font
+	hp.font_size = 34
+	hp.pixel_size = 0.006
+	hp.outline_size = 12
+	hp.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	hp.no_depth_test = true
+	hp.render_priority = 4
+	hp.outline_render_priority = 3
+	hp.position = Vector3(0.0, 0.8, 0)
+	root.add_child(hp)
+	var blob := MeshInstance3D.new()
+	blob.mesh = LowPoly.get_mesh("blob")
+	var bm := mat_blob.duplicate() as StandardMaterial3D
+	bm.albedo_color = Color(0.05, 0.12, 0.05, 0.3)
+	blob.material_override = bm
+	blob.position = Vector3(0.02, 0.015, 0.02)
+	blob.scale = Vector3(1.0, 1, 0.8)
+	root.add_child(blob)
+	var star := MeshInstance3D.new()
+	star.name = "Star"
+	star.mesh = LowPoly.get_mesh("star")
+	star.material_override = mat_solid
+	star.position = Vector3(-0.2, 0.8, 0)
+	root.add_child(star)
+	root.rotation.y = deg_to_rad(-20)
+	var p := rest_pos(u.idx)
+	root.position = map_to_world(p, height(u.idx))
+	add_child(root)
+	# pop in
+	root.scale = Vector3(0.2, 0.2, 0.2)
+	var tw := root.create_tween()
+	tw.tween_property(root, "scale", Vector3.ONE * UNIT_SCALE, 0.25).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	return root
+
+
+func _unit_death(n: Node3D) -> void:
+	var tw := n.create_tween()
+	tw.tween_property(n, "scale", Vector3(0.01, 0.01, 0.01), 0.3).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_IN)
+	tw.tween_callback(n.queue_free)
+
+
+func _update_units() -> void:
+	for u in unit_nodes:
+		var n: Node3D = unit_nodes[u]
 		var animating := unit_pos.has(u)
-		if u.owner != viewer and not seen(u.idx) and not animating:
+		var show: bool = u.owner == viewer or (seen(u.idx) and explored(u.idx)) or animating
+		n.visible = show
+		if not show:
 			continue
-		var p := unit_draw_pos(u)
-		var col := Defs.BANDIT_COLOR if u.owner < 0 else Defs.player_color(_color_of(u.owner))
-		var spent := u.owner == gs.cur and u.owner == viewer and _spent(u)
-		var r := R * (0.36 if gs.town_at.has(u.idx) and not animating else 0.42)
-		Icons.unit_token(ci, u.type, p, r, col, spent, u.kills >= Defs.VETERAN_KILLS)
+		var col := Defs.BANDIT_COLOR if u.owner < 0 else _color_of(u.owner)
+		var spent: bool = u.owner == gs.cur and u.owner == viewer and _spent(u)
+		var body: MeshInstance3D = n.get_node("Body")
+		body.set_surface_override_material(0, _solid_dim() if spent else mat_solid)
+		if body.mesh.get_surface_count() > 1:
+			body.set_surface_override_material(1, _team_mat(col, spent))
 		var maxhp := Defs.unit_max_hp(u.type, u.kills)
-		_hp_pips(ci, p + Vector2(0, r + 4), u.hp, maxhp)
+		var hp: Label3D = n.get_node("HP")
+		hp.text = str(u.hp)
+		hp.modulate = Color.WHITE if u.hp * 2 > maxhp else (Color("#ffcf5c") if u.hp * 4 > maxhp else Color("#ff6b5b"))
+		hp.outline_modulate = col.darkened(0.5)
+		n.get_node("Star").visible = u.kills >= Defs.VETERAN_KILLS
+		var small := gs.town_at.has(u.idx) and not animating
+		var s := UNIT_SCALE * (0.85 if small else 1.0)
+		if not animating and n.scale.x > 0.5 * UNIT_SCALE:
+			n.scale = Vector3(s, s, s)
+		if not animating:
+			n.position = map_to_world(rest_pos(u.idx), height(u.idx))
 
 
 func _spent(u: GameState.Unit) -> bool:
-	if u.fresh:
-		return true
-	if u.attacked:
+	if u.fresh or u.attacked:
 		return true
 	if u.moved and gs.attack_targets(u).is_empty() and not gs.can_capture(u):
 		return true
 	return false
 
 
-## Health as a small pill under the token, with the number for clarity.
-func _hp_pips(ci: Node2D, c: Vector2, hp: int, maxhp: int) -> void:
-	var col := Color("#7bd389") if hp * 2 > maxhp else (Color("#ffb347") if hp * 4 > maxhp else Color("#ff6b5b"))
-	var wdt := 34.0
-	var rect := Rect2(c - Vector2(wdt / 2, 0), Vector2(wdt, 7))
-	ci.draw_rect(rect.grow(1.5), Color(0, 0, 0, 0.65))
-	ci.draw_rect(Rect2(rect.position, Vector2(wdt * clampf(float(hp) / maxhp, 0, 1), 7)), col)
-
-
-func _hp_bar(ci: Node2D, c: Vector2, hp: int, maxhp: int, col: Color) -> void:
-	var wdt := 40.0
-	var rect := Rect2(c - Vector2(wdt / 2, 4), Vector2(wdt, 8))
-	ci.draw_rect(rect.grow(2), Color(0, 0, 0, 0.6))
-	ci.draw_rect(Rect2(rect.position, Vector2(wdt * clampf(float(hp) / maxhp, 0, 1), 8)), col)
+func _process(delta: float) -> void:
+	_time += delta
+	if gs == null:
+		return
+	mat_overlay.albedo_color.a = 0.8 + 0.2 * sin(_time * 5.0)
+	if mmi.has("c:cloud"):
+		mmi["c:cloud"].position = Vector3(sin(_time * 0.3) * 0.05, sin(_time * 0.8) * 0.03, 0)
+	if mmi.has("w:water"):
+		mmi["w:water"].position.y = sin(_time * 1.3) * 0.012
+	if drift:
+		var mid := Vector3((gs.w - 0.5) * Hex.SQRT3 * 0.5, 0, (gs.h - 1) * 0.75)
+		focus = mid + Vector3(sin(_time * 0.07) * gs.w * 0.45, 0, cos(_time * 0.05) * gs.h * 0.4)
+		_apply_camera()
+	for u in unit_pos:
+		var n: Node3D = unit_nodes.get(u)
+		if n == null:
+			continue
+		var p: Vector2 = unit_pos[u]
+		var i := tile_at(p)
+		var target := map_to_world(p, height(i))
+		var hop := absf(sin(_time * 16.0)) * 0.12
+		n.position = Vector3(target.x, lerpf(n.position.y, target.y, 0.35) + hop, target.z)
+		n.visible = true
+	# gentle idle bob for units that can still act
+	for u in unit_nodes:
+		var n: Node3D = unit_nodes[u]
+		var body: Node3D = n.get_node("Body")
+		if u.owner == gs.cur and u.owner == viewer and not u.moved and not u.fresh and not u.attacked:
+			body.position.y = absf(sin(_time * 3.0 + u.id)) * 0.05
+		else:
+			body.position.y = 0.0
 
 
 # ---------------------------------------------------------------- effects
 
-func float_text(world: Vector2, text: String, col: Color, big: bool = false) -> void:
-	fx.append({ "pos": world, "text": text, "col": col, "t": 0.0, "life": 1.3, "big": big })
-	fx_layer.queue_redraw()
+func float_text(map: Vector2, text: String, col: Color, big: bool = false) -> void:
+	var l := Label3D.new()
+	l.text = text
+	l.font = font
+	l.font_size = 64 if big else 52
+	l.pixel_size = 0.006
+	l.modulate = col
+	l.outline_size = 16
+	l.outline_modulate = Color(0, 0, 0, 0.85)
+	l.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	l.no_depth_test = true
+	l.render_priority = 5
+	l.outline_render_priority = 4
+	var i := tile_at(map)
+	l.position = map_to_world(map, height(i) + 0.9)
+	fx_root.add_child(l)
+	var tw := l.create_tween().set_parallel(true)
+	tw.tween_property(l, "position:y", l.position.y + 0.8, 1.2).set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_CUBIC)
+	tw.tween_property(l, "modulate:a", 0.0, 0.5).set_delay(0.8)
+	tw.tween_property(l, "outline_modulate:a", 0.0, 0.5).set_delay(0.8)
+	tw.chain().tween_callback(l.queue_free)
 
 
-func burst(world: Vector2, col: Color) -> void:
-	fx.append({ "pos": world, "burst": true, "col": col, "t": 0.0, "life": 0.45 })
-	fx_layer.queue_redraw()
+func burst(map: Vector2, col: Color) -> void:
+	var mi := MeshInstance3D.new()
+	mi.mesh = LowPoly.get_mesh("ring")
+	var m := mat_overlay.duplicate() as StandardMaterial3D
+	m.albedo_color = col
+	mi.material_override = m
+	var i := tile_at(map)
+	mi.position = map_to_world(map, height(i) + 0.08)
+	mi.scale = Vector3(0.3, 1, 0.3)
+	fx_root.add_child(mi)
+	var tw := mi.create_tween().set_parallel(true)
+	tw.tween_property(mi, "scale", Vector3(1.5, 1, 1.5), 0.45).set_ease(Tween.EASE_OUT)
+	tw.tween_property(m, "albedo_color:a", 0.0, 0.45)
+	tw.chain().tween_callback(mi.queue_free)
 
 
-func _draw_fx(ci: Node2D) -> void:
-	for f in fx:
-		var k: float = f["t"] / f["life"]
-		if f.get("burst", false):
-			var col: Color = f["col"]
-			ci.draw_arc(f["pos"], R * (0.3 + k * 0.7), 0, TAU, 24, Color(col, 1.0 - k), 6.0 * (1.0 - k) + 1.0, true)
-			continue
-		var p: Vector2 = f["pos"] + Vector2(0, -40 * k - 20)
-		var a := 1.0 - maxf(0.0, (k - 0.6) / 0.4)
-		var fs := 34 if f.get("big", false) else 28
-		var text: String = f["text"]
-		var tw := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
-		var col: Color = f["col"]
-		ci.draw_string_outline(font, p - Vector2(tw / 2, 0), text, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, 6, Color(0, 0, 0, a * 0.8))
-		ci.draw_string(font, p - Vector2(tw / 2, 0), text, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(col, a))
+# ---------------------------------------------------------------- camera
+
+func _apply_camera() -> void:
+	if cam == null:
+		return
+	var vp := get_viewport().get_visible_rect().size
+	if vp.x < vp.y:
+		cam.keep_aspect = Camera3D.KEEP_WIDTH
+	else:
+		cam.keep_aspect = Camera3D.KEEP_HEIGHT
+	cam.size = span
+	var back := Vector3(0, sin(PITCH), cos(PITCH)) * 40.0
+	cam.position = focus + back
+	cam.rotation = Vector3(-PITCH, 0, 0)
+
+
+func _clamp_focus() -> void:
+	if gs == null:
+		return
+	# keep the map filling the screen, allowing a little sea at the edges
+	var vp := get_viewport().get_visible_rect().size
+	var half_w := span / 2.0 if vp.x < vp.y else span * vp.x / vp.y / 2.0
+	var half_h := span * vp.y / vp.x / 2.0 if vp.x < vp.y else span / 2.0
+	var half_d := half_h / sin(PITCH)
+	var lo := Vector2(-0.9, -1.0)
+	var hi := Vector2((gs.w - 0.5) * Hex.SQRT3 + 0.9, (gs.h - 1) * 1.5 + 1.0)
+	var slack := 0.35
+	var min_x := lo.x + half_w * (1.0 - slack)
+	var max_x := hi.x - half_w * (1.0 - slack)
+	var min_z := lo.y + half_d * (1.0 - slack)
+	var max_z := hi.y - half_d * (1.0 - slack) + half_d * 0.3
+	focus.x = (lo.x + hi.x) / 2.0 if min_x > max_x else clampf(focus.x, min_x, max_x)
+	focus.z = (lo.y + hi.y) / 2.0 if min_z > max_z else clampf(focus.z, min_z, max_z)
+	focus.y = 0.0
+
+
+func screen_to_ground(screen: Vector2, y: float = 0.0) -> Vector3:
+	var o := cam.project_ray_origin(screen)
+	var d := cam.project_ray_normal(screen)
+	if absf(d.y) < 1e-4:
+		return o
+	var t := (y - o.y) / d.y
+	return o + d * t
+
+
+func screen_to_map(screen: Vector2) -> Vector2:
+	# pick on the land surface, then refine with that tile's height
+	var g := screen_to_ground(screen, 0.0)
+	var i := tile_at(Vector2(g.x, g.z) * Hex.SIZE)
+	if i >= 0 and absf(height(i)) > 0.01:
+		g = screen_to_ground(screen, height(i))
+	return Vector2(g.x, g.z) * Hex.SIZE
+
+
+func pan(from_screen: Vector2, to_screen: Vector2) -> void:
+	_stop_cam_tween()
+	focus += screen_to_ground(from_screen) - screen_to_ground(to_screen)
+	_clamp_focus()
+	_apply_camera()
+
+
+func zoom_at(screen: Vector2, factor: float) -> void:
+	_stop_cam_tween()
+	var before := screen_to_ground(screen)
+	span = clampf(span / factor, MIN_SPAN, MAX_SPAN)
+	_apply_camera()
+	var after := screen_to_ground(screen)
+	focus += before - after
+	_clamp_focus()
+	_apply_camera()
+
+
+## Centres the view on a tile, leaving room for the bottom panel.
+func look_at_tile(i: int, animate: bool = false) -> void:
+	var target := world(i)
+	target.y = 0.0
+	target.z += span * 0.12
+	var old := focus
+	focus = target
+	_clamp_focus()
+	if not animate:
+		_apply_camera()
+		return
+	var dest := focus
+	focus = old
+	_stop_cam_tween()
+	_cam_tween = create_tween()
+	_cam_tween.tween_method(_set_focus, old, dest, 0.35).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+
+
+func _set_focus(p: Vector3) -> void:
+	focus = p
+	_apply_camera()
+
+
+func reset_zoom() -> void:
+	span = 8.5
+	_apply_camera()
+
+
+func _stop_cam_tween() -> void:
+	if _cam_tween and _cam_tween.is_valid():
+		_cam_tween.kill()

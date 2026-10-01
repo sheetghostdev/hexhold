@@ -20,15 +20,5 @@ func _init() -> void:
 	for i in gs.tiles_in_range(enemy_cap.idx, 2):
 		gs.players[0].explored[i] = 1
 	gs.rebuild_caches()
-	# camera centres on our capital, so move the capital marker next to the action:
-	# simplest is to print the CSS position relative to that camera.
-	var scale := 412.0 / 720.0
-	var vp := Vector2(720, 860.0 / scale)
-	var z := clampf(vp.x / (Hex.SIZE * Hex.SQRT3 * 7.5), 0.4, 1.8)
-	var cam := gs.center(gs.capital_of(0).idx) + Vector2(0, 90 / z)
-	var a := Hex.offset_to_pixel(0, 0) - Vector2(Hex.SIZE, Hex.SIZE)
-	var b := Hex.offset_to_pixel(gs.w - 1, gs.h - 1) + Vector2(Hex.SIZE * 2, Hex.SIZE + 11)
-	cam = cam.clamp(a, b)
-	print("UNIT ", (((gs.center(u.idx) - cam) * z + vp / 2.0) * scale).round())
 	print("LINK http://localhost:8060/index.html#g=" + Codec.encode(gs))
 	quit()

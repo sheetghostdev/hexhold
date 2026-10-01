@@ -11,7 +11,6 @@ var gs: GameState
 var local := 0           # the player using this device (-1 = unknown)
 var mode: int = Mode.PLAY
 var board: Board
-var camera: Camera2D
 var hud: Hud
 
 # selection
@@ -37,16 +36,17 @@ var painting_drag := false
 var mouse_pan := false
 
 const TAP_SLOP := 14.0
-const MIN_ZOOM := 0.4
-const MAX_ZOOM := 1.8
+
+
+var _debug_cb = null
 
 
 func _ready() -> void:
+	if Net.is_web() and Net._truthy(JavaScriptBridge.eval("location.search.indexOf('debug') >= 0", true)):
+		_debug_cb = true
+		JavaScriptBridge.eval("window.hexDebug = function() { window.__hexDebugReq = true; }", true)
 	board = Board.new()
 	add_child(board)
-	camera = Camera2D.new()
-	add_child(camera)
-	camera.make_current()
 	hud = Hud.new()
 	add_child(hud)
 	hud.setup(self)
@@ -133,45 +133,32 @@ func is_my_turn() -> bool:
 # ---------------------------------------------------------------- camera
 
 func screen_to_world(s: Vector2) -> Vector2:
-	var vp := get_viewport().get_visible_rect().size
-	return camera.position + (s - vp / 2.0) / camera.zoom
-
-
-func _clamp_camera() -> void:
-	var r := board.map_rect()
-	camera.position = camera.position.clamp(r.position, r.end)
+	return board.screen_to_map(s)
 
 
 func _center_on_home() -> void:
 	var v := _viewer()
-	var target := board.map_rect().get_center()
+	var target := -1
 	if v >= 0 and v < gs.players.size():
 		var cap := gs.capital_of(v)
 		if cap:
-			target = gs.center(cap.idx)
+			target = cap.idx
 		else:
 			var us := gs.player_units(v)
 			if not us.is_empty():
-				target = gs.center(us[0].idx)
-	var vp := get_viewport().get_visible_rect().size
-	var z := clampf(vp.x / (Hex.SIZE * Hex.SQRT3 * 7.5), MIN_ZOOM, MAX_ZOOM)
-	camera.zoom = Vector2(z, z)
-	camera.position = target + Vector2(0, 90 / z)
-	_clamp_camera()
+				target = us[0].idx
+	if target < 0:
+		target = gs.idx_of(gs.w / 2, gs.h / 2)
+	board.reset_zoom()
+	board.look_at_tile(target)
 
 
 func focus_tile(i: int) -> void:
-	var tw := create_tween()
-	tw.tween_property(camera, "position", gs.center(i) + Vector2(0, 80 / camera.zoom.x), 0.35).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+	board.look_at_tile(i, true)
 
 
 func _zoom_at(screen: Vector2, factor: float) -> void:
-	var before := screen_to_world(screen)
-	var z := clampf(camera.zoom.x * factor, MIN_ZOOM, MAX_ZOOM)
-	camera.zoom = Vector2(z, z)
-	var after := screen_to_world(screen)
-	camera.position += before - after
-	_clamp_camera()
+	board.zoom_at(screen, factor)
 
 
 # ---------------------------------------------------------------- input
@@ -190,8 +177,8 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event is InputEventMagnifyGesture:
 		_zoom_at(event.position, event.factor)
 	elif event is InputEventPanGesture:
-		camera.position += event.delta * 12.0 / camera.zoom
-		_clamp_camera()
+		var mid := get_viewport().get_visible_rect().size / 2.0
+		board.pan(mid, mid - event.delta * 12.0)
 
 
 func _on_touch(e: InputEventScreenTouch) -> void:
@@ -225,8 +212,7 @@ func _on_drag(e: InputEventScreenDrag) -> void:
 		if pinch_dist > 0.0:
 			_zoom_at(mid, d / pinch_dist)
 		pinch_dist = d
-		camera.position -= e.relative / camera.zoom / 2.0
-		_clamp_camera()
+		board.pan(e.position - e.relative / 2.0, e.position)
 		return
 	if painting_drag:
 		_paint_at(screen_to_world(e.position), false)
@@ -234,8 +220,7 @@ func _on_drag(e: InputEventScreenDrag) -> void:
 	if not drag_moved and e.position.distance_to(press_pos) > TAP_SLOP:
 		drag_moved = true
 	if drag_moved:
-		camera.position -= e.relative / camera.zoom
-		_clamp_camera()
+		board.pan(e.position - e.relative, e.position)
 
 
 func _on_mouse_button(e: InputEventMouseButton) -> void:
@@ -272,8 +257,7 @@ func _on_mouse_motion(e: InputEventMouseMotion) -> void:
 		if e.position.distance_to(press_pos) > TAP_SLOP:
 			drag_moved = true
 		if drag_moved:
-			camera.position -= e.relative / camera.zoom
-			_clamp_camera()
+			board.pan(e.position - e.relative, e.position)
 
 
 # ---------------------------------------------------------------- selection
@@ -440,8 +424,8 @@ func do_move(u: GameState.Unit, target: int) -> void:
 	Sfx.play("move")
 	var tw := create_tween()
 	for k in range(1, path.size()):
-		var a: Vector2 = gs.center(path[k - 1]) + Vector2(0, -6) if k > 1 else board.unit_pos[u]
-		var b: Vector2 = board.rest_pos(path[k]) if k == path.size() - 1 else gs.center(path[k]) + Vector2(0, -6)
+		var a: Vector2 = gs.center(path[k - 1]) if k > 1 else board.unit_pos[u]
+		var b: Vector2 = board.rest_pos(path[k]) if k == path.size() - 1 else gs.center(path[k])
 		tw.tween_method(func(p: Vector2): board.unit_pos[u] = p, a, b, 0.11)
 	await tw.finished
 	board.unit_pos.erase(u)
@@ -833,3 +817,30 @@ func _save() -> void:
 func leave() -> void:
 	_save()
 	quit_to_menu.emit()
+
+
+## Test hook (only with ?debug in the URL): writes screen positions of
+## tiles and units to window.hexDebugResult for automated UI tests.
+func _process(_delta: float) -> void:
+	if _debug_cb != null and gs != null and Net._truthy(JavaScriptBridge.eval("!!window.__hexDebugReq", true)):
+		JavaScriptBridge.eval("window.__hexDebugReq = false", true)
+		_debug_dump([])
+
+
+func _debug_dump(_args: Array) -> void:
+	var vp := get_viewport().get_visible_rect().size
+	var tiles := {}
+	for i in gs.n_tiles():
+		var p := board.cam.unproject_position(board.world(i))
+		tiles[str(i)] = [roundi(p.x), roundi(p.y)]
+	var us := []
+	for u in gs.units:
+		var p := board.cam.unproject_position(board.map_to_world(board.rest_pos(u.idx), board.height(u.idx)))
+		var tg := []
+		var rc := []
+		if u.owner == gs.cur:
+			tg = gs.attack_targets(u)
+			rc = gs.reachable(u).keys()
+		us.append({ "type": Defs.UNITS[u.type]["name"], "owner": u.owner, "idx": u.idx, "pos": [roundi(p.x), roundi(p.y)], "targets": tg, "reach": rc })
+	var info := { "vp": [vp.x, vp.y], "cur": gs.cur, "tiles": tiles, "units": us }
+	JavaScriptBridge.eval("window.hexDebugResult = %s" % JSON.stringify(JSON.stringify(info)), true)

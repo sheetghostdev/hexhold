@@ -3,6 +3,15 @@ extends RefCounted
 ## Browser glue: reading the turn from the link, sharing a turn to
 ## Discord (via the phone's share sheet), clipboard and text prompts.
 
+## JS booleans can come back as bool or int depending on the bridge.
+static func _truthy(v: Variant) -> bool:
+	if v is bool:
+		return v
+	if v is int or v is float:
+		return v != 0
+	return false
+
+
 static func is_web() -> bool:
 	return OS.has_feature("web")
 
@@ -53,7 +62,7 @@ static func share(title: String, text: String) -> bool:
 		})(%s, %s)
 		""" % [JSON.stringify(title), JSON.stringify(text)]
 		var r = JavaScriptBridge.eval(js, true)
-		return r == true
+		return _truthy(r)
 	copy(text)
 	return false
 
@@ -61,7 +70,7 @@ static func share(title: String, text: String) -> bool:
 static func can_share_sheet() -> bool:
 	if not is_web():
 		return false
-	return JavaScriptBridge.eval("!!navigator.share", true) == true
+	return _truthy(JavaScriptBridge.eval("!!navigator.share", true))
 
 
 static func copy(text: String) -> void:

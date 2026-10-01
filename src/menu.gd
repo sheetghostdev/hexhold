@@ -29,7 +29,11 @@ func _ready() -> void:
 	center.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.add_child(center)
 	content = UI.vbox(16)
-	var m := UI.margin(content, 24)
+	var card := PanelContainer.new()
+	var sb := UI._box(Color(UI.PANEL_SOLID, 0.9), 28, 26)
+	card.add_theme_stylebox_override("panel", sb)
+	card.add_child(content)
+	var m := UI.margin(card, 16)
 	center.add_child(m)
 	modal_root = Control.new()
 	modal_root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -46,33 +50,20 @@ func _ready() -> void:
 		"mode": GameState.Mode.CONQUEST,
 	}
 	show_main()
-	set_process(true)
 
 
-func _process(delta: float) -> void:
-	_t += delta
-	if get_child_count() > 0:
-		get_child(0).queue_redraw()
+
 
 
 func _draw_bg(c: Control) -> void:
 	var sz := c.size
-	c.draw_rect(Rect2(Vector2.ZERO, sz), UI.BG)
-	var r := 46.0
-	var cols := [Color("#22384a"), Color("#1f3344"), Color("#25404f"), Color("#203646")]
-	var rows := int(sz.y / (r * 1.5)) + 3
-	var colsn := int(sz.x / (r * Hex.SQRT3)) + 3
-	var drift := fmod(_t * 6.0, r * 3.0)
-	for row in rows:
-		for col in colsn:
-			var p := Hex.offset_to_pixel(col, row) + Vector2(-r, -r * 1.5 + drift)
-			p *= r / Hex.SIZE
-			var k := GameState.mix(col, row, 11) % 17
-			var colr: Color = cols[k % 4]
-			if k == 3:
-				colr = Color("#2c4a3a")
-			c.draw_colored_polygon(Hex.corners(p, r - 3), colr)
-	c.draw_rect(Rect2(Vector2.ZERO, sz), Color(UI.BG, 0.45))
+	# the 3D kingdom shows through; a soft vignette keeps text readable
+	var top := Color(UI.BG, 0.55)
+	var mid := Color(UI.BG, 0.2)
+	var pts := PackedVector2Array([Vector2(0, 0), Vector2(sz.x, 0), Vector2(sz.x, sz.y * 0.5), Vector2(0, sz.y * 0.5)])
+	c.draw_polygon(pts, PackedColorArray([top, top, mid, mid]))
+	pts = PackedVector2Array([Vector2(0, sz.y * 0.5), Vector2(sz.x, sz.y * 0.5), Vector2(sz.x, sz.y), Vector2(0, sz.y)])
+	c.draw_polygon(pts, PackedColorArray([mid, mid, top, top]))
 
 
 func _clear() -> void:
@@ -82,7 +73,7 @@ func _clear() -> void:
 
 
 func _width() -> float:
-	return minf(640.0, get_viewport_rect().size.x - 48)
+	return minf(600.0, get_viewport_rect().size.x - 84)
 
 
 func _wide(b: Control) -> Control:
