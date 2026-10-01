@@ -11,6 +11,7 @@ func _ready() -> void:
 	get_window().theme = UI.theme()
 	RenderingServer.set_default_clear_color(UI.BG)
 	add_child(Sfx.new())
+	_tune_performance()
 	if Net.is_web():
 		_hash_cb = JavaScriptBridge.create_callback(_on_hash_change)
 		JavaScriptBridge.get_interface("window").addEventListener("hashchange", _hash_cb)
@@ -19,6 +20,22 @@ func _ready() -> void:
 		open_code(code)
 	else:
 		show_menu()
+
+
+## Sharp phone screens have 3x the pixels: render the 3D world a bit lower
+## (the UI stays crisp) so the game stays smooth and battery-friendly.
+func _tune_performance() -> void:
+	var dpr := 1.0
+	if Net.is_web():
+		var v = JavaScriptBridge.eval("window.devicePixelRatio || 1", true)
+		if v is float or v is int:
+			dpr = float(v)
+	else:
+		dpr = DisplayServer.screen_get_scale()
+	if dpr >= 2.5:
+		get_viewport().scaling_3d_scale = 0.7
+	elif dpr >= 1.75:
+		get_viewport().scaling_3d_scale = 0.85
 
 
 func _on_hash_change(_args: Array) -> void:
@@ -56,7 +73,7 @@ func _show_backdrop() -> void:
 	var gs := GameState.create({ "players": [
 		{ "name": "A", "color": 0, "ai": true }, { "name": "B", "color": 1, "ai": true },
 		{ "name": "C", "color": 2, "ai": true }], "size": 1, "seed": randi() % 100000 })
-	for k in 18:
+	for k in 9:
 		AIPlayer.play_turn(gs)
 		gs.end_turn()
 	backdrop = Board.new()

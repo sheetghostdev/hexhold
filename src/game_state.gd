@@ -4,7 +4,7 @@ extends RefCounted
 ## Pure data + logic (no nodes), so it can be saved into a link,
 ## run by the AI, and tested headless.
 
-const VERSION := 1
+const VERSION := 2
 
 enum Ev { ATTACK, CAPTURE, TOWER, BANDIT, ELIMINATED, KEEP, GROW, RUIN, CAMP, WIN, STRUCT }
 enum Mode { CONQUEST, GLORY }
@@ -14,10 +14,7 @@ class Player:
 	var name := ""
 	var color := 0
 	var gold := 0
-	var wood := 0
-	var stone := 0
 	var keep := 1
-	var tax: int = Defs.TAX.FAIR
 	var ai := false
 	var alive := true
 	var explored := PackedByteArray()
@@ -29,10 +26,12 @@ class Town:
 	var idx := 0
 	var owner := -1
 	var level := 1
-	var food := 0
+	var pop := 0        # people towards the next level
+	var bonus := 0      # extra gold per turn from rewards
 	var walls := false
 	var capital := false
-	var feasted := false
+	var big := false    # bigger borders (radius 2)
+	var reward := 0     # level whose reward is waiting to be picked (0 = none)
 	var name := ""
 
 
@@ -76,6 +75,12 @@ var events: Array = []  # [seq, turn, type, args...]
 # Derived caches
 var town_at := {}
 var unit_at := {}
+var _vis_cache := {}
+
+
+## Call after anything that can change what players see.
+func _dirty() -> void:
+	_vis_cache.clear()
 
 
 # ---------------------------------------------------------------- geometry
@@ -140,6 +145,7 @@ func tiles_in_range(idx: int, r: int) -> Array[int]:
 # ---------------------------------------------------------------- caches & queries
 
 func rebuild_caches() -> void:
+	_dirty()
 	town_at.clear()
 	for i in towns.size():
 		town_at[towns[i].idx] = i
@@ -213,7 +219,7 @@ func capital_of(p: int) -> Town:
 
 
 func town_radius(t: Town) -> int:
-	return 2 if t.capital or t.level >= 3 else 1
+	return 2 if t.big else 1
 
 
 func unit_cap(p: int) -> int:
@@ -225,19 +231,15 @@ func unit_cap(p: int) -> int:
 
 
 func town_unit_cap(t: Town) -> int:
-	return 1 + (t.level + 1) / 2
+	return t.level + 1
 
 
-func can_afford(p: int, cost: Array) -> bool:
-	var pl := players[p]
-	return pl.gold >= cost[0] and pl.wood >= cost[1] and pl.stone >= cost[2]
+func can_afford(p: int, cost: int) -> bool:
+	return players[p].gold >= cost
 
 
-func pay(p: int, cost: Array) -> void:
-	var pl := players[p]
-	pl.gold -= cost[0]
-	pl.wood -= cost[1]
-	pl.stone -= cost[2]
+func pay(p: int, cost: int) -> void:
+	players[p].gold -= cost
 
 
 func alive_players() -> Array[int]:
@@ -251,6 +253,7 @@ func alive_players() -> Array[int]:
 # ---------------------------------------------------------------- territory
 
 func claim_around(town_i: int) -> void:
+	_dirty()
 	var t := towns[town_i]
 	for j in tiles_in_range(t.idx, town_radius(t)):
 		if claim[j] == 0 and (not town_at.has(j) or j == t.idx):
@@ -261,10 +264,13 @@ func claim_around(town_i: int) -> void:
 # ---------------------------------------------------------------- visibility
 
 func visible_for(p: int) -> PackedByteArray:
+	if _vis_cache.has(p):
+		return _vis_cache[p]
 	var vis := PackedByteArray()
 	vis.resize(n_tiles())
 	if p < 0:
 		vis.fill(1)
+		_vis_cache[p] = vis
 		return vis
 	for t in towns:
 		if t.owner == p:
@@ -280,6 +286,7 @@ func visible_for(p: int) -> PackedByteArray:
 				vis[j] = 1
 		elif claim[i] != 0 and tile_owner(i) == p:
 			vis[i] = 1
+	_vis_cache[p] = vis
 	return vis
 
 
@@ -333,7 +340,10 @@ func _adjacent_enemy(idx: int, p: int) -> bool:
 ## Returns {idx: {"rem": int, "from": int}} for every tile the unit can end on.
 func reachable(u: Unit) -> Dictionary:
 	var out := {}
-	if u.moved or u.fresh or u.attacked or u.owner < 0:
+	if u.moved or u.fresh or u.owner < 0:
+		return out
+	# knights can still ride off after attacking
+	if u.attacked and u.type != Defs.U.KNIGHT:
 		return out
 	var best := { u.idx: move_points(u) }
 	var parent := { u.idx: -1 }
@@ -404,7 +414,13 @@ func move_unit(u: Unit, target: int) -> Array:
 	u.idx = target
 	unit_at[target] = u
 	u.moved = true
+	_dirty()
 	var notes: Array = []
+	# grey villages join you as soon as you walk in
+	var tw := town_on(target)
+	if tw != null and tw.owner == -1 and not u.attacked:
+		capture(u)
+		notes.append({ "kind": "capture", "text": "%s joins your kingdom!" % tw.name })
 	if feature[target] == Defs.F.RUIN:
 		notes.append(_explore_ruin(u))
 	elif feature[target] == Defs.F.CAMP:
@@ -427,9 +443,16 @@ func _explore_ruin(u: Unit) -> Dictionary:
 			p.gold += 10
 			text = "Buried treasure! +10 gold"
 		1:
-			p.wood += 5
-			p.stone += 5
-			text = "Abandoned stockpile! +5 wood, +5 stone"
+			var best: Town = null
+			for t in towns:
+				if t.owner == u.owner and (best == null or dist(t.idx, i) < dist(best.idx, i)):
+					best = t
+			if best != null:
+				add_pop(best, 2)
+				text = "Lost villagers settle in %s: +2 people" % best.name
+			else:
+				p.gold += 8
+				text = "Old coins! +8 gold"
 		2:
 			var spot := -1
 			for j in neighbors(i):
@@ -558,7 +581,9 @@ func attack(att: Unit, tidx: int) -> Dictionary:
 		return {}
 	var fc := forecast(att, tidx)
 	att.attacked = true
-	att.moved = true
+	if att.type != Defs.U.KNIGHT:
+		att.moved = true
+	_dirty()
 	if fc["kind"] == "structure":
 		var owner := tile_owner(tidx)
 		bhp[tidx] = maxi(0, bhp[tidx] - fc["dmg"])
@@ -578,6 +603,7 @@ func attack(att: Unit, tidx: int) -> Dictionary:
 			unit_at.erase(att.idx)
 			att.idx = tidx
 			unit_at[tidx] = att
+			att.moved = true
 			fc["advanced"] = true
 			if feature[tidx] == Defs.F.CAMP:
 				feature[tidx] = Defs.F.NONE
@@ -595,6 +621,7 @@ func attack(att: Unit, tidx: int) -> Dictionary:
 
 
 func _kill(u: Unit) -> void:
+	_dirty()
 	units.erase(u)
 	if unit_at.get(u.idx) == u:
 		unit_at.erase(u.idx)
@@ -631,7 +658,7 @@ func capture(u: Unit) -> void:
 	t.owner = u.owner
 	if old >= 0:
 		t.capital = false
-		t.food = 0
+		t.reward = 0
 	elif capital_of(u.owner) == null:
 		t.capital = true
 	u.moved = true
@@ -685,6 +712,17 @@ func _check_victory() -> void:
 
 # ---------------------------------------------------------------- building
 
+## People a building would add to its town on this tile.
+func build_pop(idx: int, b: int) -> int:
+	var data: Dictionary = Defs.BUILDINGS[b]
+	var pop: int = data.get("pop", 0)
+	if pop > 0 and data.has("rich"):
+		var f := feature[idx]
+		if f == data["rich"] or (b == Defs.B.MINE and f == Defs.F.STONE):
+			pop += 1
+	return pop
+
+
 ## Returns "" if allowed, otherwise a short reason.
 func build_problem(p: int, idx: int, b: int) -> String:
 	if town_at.has(idx):
@@ -696,21 +734,16 @@ func build_problem(p: int, idx: int, b: int) -> String:
 	if occ != null and occ.owner != p:
 		return "An enemy is standing here"
 	if tile_owner(idx) != p:
-		return "Must be inside your borders"
+		return "Only inside your borders"
 	if building[idx] != Defs.B.NONE:
-		return "Tile already has a building"
+		return "Already built here"
 	var data: Dictionary = Defs.BUILDINGS[b]
 	if not data["terrain"].has(terrain[idx]):
-		var names := PackedStringArray()
-		for t in data["terrain"]:
-			names.append(Defs.TERRAIN_NAMES[t])
-		return "Needs %s" % " or ".join(names)
-	if data.has("feature") and f != data["feature"]:
-		return "Needs a %s" % Defs.FEATURE_NAMES[data["feature"]].to_lower()
+		return "Wrong terrain"
 	if players[p].keep < data["keep"]:
-		return "Requires %s" % Defs.KEEP_NAMES[data["keep"]]
+		return "Needs %s" % Defs.KEEP_NAMES[data["keep"]]
 	if not can_afford(p, data["cost"]):
-		return "Costs %s" % Defs.cost_text(data["cost"])
+		return "Not enough gold"
 	return ""
 
 
@@ -720,10 +753,14 @@ func build(p: int, idx: int, b: int) -> bool:
 	pay(p, Defs.BUILDINGS[b]["cost"])
 	building[idx] = b
 	bhp[idx] = Defs.BUILDINGS[b].get("hp", 0)
+	_dirty()
+	var pop := build_pop(idx, b)
+	if pop > 0:
+		add_pop(tile_town(idx), pop)
 	return true
 
 
-func road_cost(idx: int) -> Array:
+func road_cost(idx: int) -> int:
 	return Defs.BRIDGE_COST if terrain[idx] == Defs.T.WATER else Defs.ROAD_COST
 
 
@@ -731,10 +768,10 @@ func road_problem(p: int, idx: int) -> String:
 	if road[idx] != 0 or town_at.has(idx):
 		return "Already has a road"
 	if terrain[idx] == Defs.T.MOUNTAIN:
-		return "Can't build roads on mountains"
+		return "No roads on mountains"
 	var owner := tile_owner(idx)
 	if owner != p and owner != -1:
-		return "Can't build in enemy land"
+		return "Enemy land"
 	if p < players.size() and players[p].explored[idx] == 0:
 		return "Unexplored"
 	if terrain[idx] == Defs.T.WATER:
@@ -761,27 +798,19 @@ func build_road(p: int, idx: int) -> bool:
 	return true
 
 
-func demolish(p: int, idx: int) -> bool:
-	if tile_owner(idx) != p or building[idx] == Defs.B.NONE:
-		return false
-	building[idx] = Defs.B.NONE
-	bhp[idx] = 0
-	return true
-
-
 func recruit_problem(t: Town, type: int) -> String:
 	var p := cur
 	if t.owner != p:
 		return "Not your town"
 	if unit_on(t.idx) != null:
 		return "Move the unit off first"
-	if player_units(p).size() >= unit_cap(p):
-		return "Army is at its limit (%d). Grow towns for more." % unit_cap(p)
 	var data: Dictionary = Defs.UNITS[type]
 	if players[p].keep < data["keep"]:
-		return "Requires %s" % Defs.KEEP_NAMES[data["keep"]]
+		return "Needs %s" % Defs.KEEP_NAMES[data["keep"]]
+	if player_units(p).size() >= unit_cap(p):
+		return "Army full: grow your towns"
 	if not can_afford(p, data["cost"]):
-		return "Costs %s" % Defs.cost_text(data["cost"])
+		return "Not enough gold"
 	return ""
 
 
@@ -804,6 +833,7 @@ func spawn_unit(type: int, idx: int, owner: int) -> Unit:
 	u.hp = Defs.unit_max_hp(type, 0)
 	units.append(u)
 	unit_at[idx] = u
+	_dirty()
 	return u
 
 
@@ -816,9 +846,8 @@ func keep_problem(p: int) -> String:
 	var k := players[p].keep
 	if k >= 3:
 		return "Already a Castle"
-	var c: Array = Defs.KEEP_COST[k + 1]
-	if not can_afford(p, c):
-		return "Costs %s" % Defs.cost_text(c)
+	if not can_afford(p, Defs.KEEP_COST[k + 1]):
+		return "Not enough gold"
 	return ""
 
 
@@ -831,64 +860,81 @@ func upgrade_keep(p: int) -> bool:
 	return true
 
 
-func feast_cost(t: Town) -> Array:
-	return [3 + t.level * 2, 0, 0]
+# ---------------------------------------------------------------- towns grow
+
+func pop_need(level: int) -> int:
+	return level + 1
 
 
-func feast_problem(t: Town) -> String:
-	if t.owner != cur:
-		return "Not your town"
-	if t.level >= Defs.MAX_TOWN_LEVEL:
-		return "Town is fully grown"
-	if t.feasted:
-		return "Already feasted this turn"
-	if not can_afford(cur, feast_cost(t)):
-		return "Costs %s" % Defs.cost_text(feast_cost(t))
-	return ""
-
-
-## Spend gold for food: the town grows sooner (Stronghold's feasts).
-func feast(t: Town) -> bool:
-	if feast_problem(t) != "":
-		return false
-	pay(cur, feast_cost(t))
-	t.feasted = true
-	var ti: int = town_at[t.idx]
-	t.food += Defs.FEAST_FOOD
-	while t.level < Defs.MAX_TOWN_LEVEL and t.food >= food_need(t.level):
-		t.food -= food_need(t.level)
+## Adds people to a town; a full town levels up and earns a reward choice.
+func add_pop(t: Town, n: int) -> void:
+	if t == null or t.owner < 0:
+		return
+	t.pop += n
+	while t.level < Defs.MAX_TOWN_LEVEL and t.pop >= pop_need(t.level):
+		t.pop -= pop_need(t.level)
 		t.level += 1
-		claim_around(ti)
-		_log(Ev.GROW, [cur, ti, t.level])
-	return true
+		if t.reward > 0:
+			# an older choice was never made: take its first option
+			choose_reward(t, 0)
+		t.reward = t.level
+		_log(Ev.GROW, [t.owner, town_at[t.idx], t.level])
+	if t.level >= Defs.MAX_TOWN_LEVEL:
+		t.pop = mini(t.pop, pop_need(t.level))
 
 
-func fortify_problem(t: Town) -> String:
-	if t.owner != cur:
-		return "Not your town"
-	if t.walls:
-		return "Already has town walls"
-	if not can_afford(cur, Defs.TOWN_WALL_COST):
-		return "Costs %s" % Defs.cost_text(Defs.TOWN_WALL_COST)
-	return ""
+func pending_reward(p: int) -> Town:
+	for t in towns:
+		if t.owner == p and t.reward > 0:
+			return t
+	return null
 
 
-func fortify(t: Town) -> bool:
-	if fortify_problem(t) != "":
-		return false
-	pay(cur, Defs.TOWN_WALL_COST)
-	t.walls = true
-	return true
+func choose_reward(t: Town, option: int) -> int:
+	if t.reward <= 0:
+		return -1
+	var opts := Defs.rewards_for(t.reward)
+	t.reward = 0
+	if opts.is_empty():
+		return -1
+	var r: int = opts[clampi(option, 0, opts.size() - 1)]
+	var ti: int = town_at[t.idx]
+	match r:
+		Defs.R.WORKSHOP:
+			t.bonus += 1
+		Defs.R.GUILD:
+			t.bonus += 2
+		Defs.R.EXPLORER:
+			reveal(t.owner, t.idx, 4)
+		Defs.R.WALLS:
+			t.walls = true
+		Defs.R.TREASURE:
+			players[t.owner].gold += 8
+		Defs.R.BORDERS:
+			t.big = true
+			claim_around(ti)
+		Defs.R.BOOM:
+			add_pop(t, 3)
+		Defs.R.CHAMPION:
+			var spot := t.idx if unit_on(t.idx) == null else -1
+			if spot < 0:
+				for j in neighbors(t.idx):
+					if unit_on(j) == null and passable_for(j, t.owner) and is_land(j):
+						spot = j
+						break
+			if spot >= 0:
+				var c := spawn_unit(Defs.U.CHAMPION, spot, t.owner)
+				c.fresh = true
+			else:
+				players[t.owner].gold += 8
+	_dirty()
+	return r
 
 
 # ---------------------------------------------------------------- economy
 
-func food_need(level: int) -> int:
-	return 2 + level * 3
-
-
 func town_gold_base(t: Town) -> int:
-	return t.level + (2 if t.capital else 0)
+	return t.level + (1 if t.capital else 0) + t.bonus
 
 
 func connected_towns(p: int) -> Dictionary:
@@ -919,89 +965,29 @@ func market_value(idx: int) -> int:
 		if tile_owner(j) != p:
 			continue
 		var b := building[j]
-		if b == Defs.B.FARM or b == Defs.B.LUMBER or b == Defs.B.QUARRY or b == Defs.B.MINE:
+		if b == Defs.B.FARM or b == Defs.B.LUMBER or b == Defs.B.MINE:
 			v += 1
 	return mini(v, 4)
 
 
-func building_yield(idx: int) -> Array:
-	## [gold, wood, stone, food]
-	var b := building[idx]
-	var f := feature[idx]
-	match b:
-		Defs.B.FARM:
-			return [0, 0, 0, 3 if f == Defs.F.FERTILE else 2]
-		Defs.B.LUMBER:
-			return [0, 3 if f == Defs.F.OLD_GROWTH else 2, 0, 0]
-		Defs.B.QUARRY:
-			return [0, 0, 3 if f == Defs.F.STONE else 2, 0]
-		Defs.B.MINE:
-			return [2, 0, 0, 0]
-		Defs.B.MARKET:
-			return [market_value(idx), 0, 0, 0]
-	return [0, 0, 0, 0]
-
-
-## Full income breakdown for a kingdom.
+## Gold per turn, with a breakdown for the UI.
 func income(p: int) -> Dictionary:
-	var pl := players[p]
-	var town_gold := 0
+	var towns_gold := 0
 	var trade := connected_towns(p)
-	var food := {}
-	for i in towns.size():
-		var t := towns[i]
-		if t.owner != p:
-			continue
-		town_gold += town_gold_base(t)
-		if trade.has(t.idx):
-			town_gold += 1
-		food[i] = 1 + (1 if pl.tax == Defs.TAX.LOW else 0) - (1 if pl.tax == Defs.TAX.HIGH else 0)
-	if pl.tax == Defs.TAX.LOW:
-		town_gold = town_gold / 2
-	elif pl.tax == Defs.TAX.HIGH:
-		town_gold = town_gold * 3 / 2
-	var upkeep := 0
-	for u in units:
-		if u.owner == p:
-			upkeep += Defs.UNIT_UPKEEP
-	var gold := town_gold - upkeep
-	var wood := 0
-	var stone := 0
+	for t in towns:
+		if t.owner == p:
+			towns_gold += town_gold_base(t)
+	var markets := 0
 	for i in n_tiles():
-		if building[i] == Defs.B.NONE or claim[i] == 0:
-			continue
-		var ti := claim[i] - 1
-		if towns[ti].owner != p:
-			continue
-		var y := building_yield(i)
-		gold += y[0]
-		wood += y[1]
-		stone += y[2]
-		if y[3] > 0:
-			food[ti] = food.get(ti, 0) + y[3]
-	return { "gold": gold, "wood": wood, "stone": stone, "food": food, "trade": trade.size(), "upkeep": upkeep, "town_gold": town_gold }
+		if building[i] == Defs.B.MARKET and tile_owner(i) == p:
+			markets += market_value(i)
+	var gold := towns_gold + markets + trade.size()
+	return { "gold": gold, "towns": towns_gold, "markets": markets, "trade": trade.size() }
 
 
 func _start_turn(p: int) -> void:
 	var pl := players[p]
-	var inc := income(p)
-	pl.gold = maxi(0, pl.gold + inc["gold"])
-	pl.wood += inc["wood"]
-	pl.stone += inc["stone"]
-	var food: Dictionary = inc["food"]
-	for ti in food:
-		var t := towns[ti]
-		t.food = maxi(0, t.food + food[ti])
-		while t.level < Defs.MAX_TOWN_LEVEL and t.food >= food_need(t.level):
-			t.food -= food_need(t.level)
-			t.level += 1
-			claim_around(ti)
-			_log(Ev.GROW, [p, ti, t.level])
-		if t.level >= Defs.MAX_TOWN_LEVEL:
-			t.food = mini(t.food, food_need(t.level))
-	for t in towns:
-		if t.owner == p:
-			t.feasted = false
+	pl.gold += income(p)["gold"]
 	for u in player_units(p):
 		if not u.moved and not u.attacked and not u.fresh:
 			var heal := 4 if tile_owner(u.idx) == p else 2
@@ -1011,6 +997,7 @@ func _start_turn(p: int) -> void:
 		u.moved = false
 		u.attacked = false
 		u.fresh = false
+	_dirty()
 	update_explored(p)
 
 
@@ -1059,8 +1046,14 @@ func end_turn() -> void:
 	if winner >= 0:
 		return
 	var p := cur
+	# a reward left unpicked is taken automatically
+	var pend := pending_reward(p)
+	while pend != null:
+		choose_reward(pend, 0)
+		pend = pending_reward(p)
 	players[p].seen_seq = seq
 	_towers_fire(p)
+	_dirty()
 	var np := players.size()
 	var nxt := p
 	for step in range(1, np + 1):
@@ -1098,7 +1091,7 @@ func score(p: int) -> int:
 			s += 20 * t.level + (30 if t.capital else 10)
 	for u in units:
 		if u.owner == p:
-			s += 4 + int(Defs.UNITS[u.type]["cost"][0])
+			s += 4 + int(Defs.UNITS[u.type]["cost"])
 	for i in n_tiles():
 		if building[i] != Defs.B.NONE and tile_owner(i) == p:
 			s += 4
@@ -1145,7 +1138,7 @@ static func create(setup: Dictionary) -> GameState:
 	var rng := RandomNumberGenerator.new()
 	gs.map_seed = int(setup.get("seed", randi()))
 	rng.seed = gs.map_seed
-	var size: Dictionary = Defs.MAP_SIZES[setup.get("size", 1)]
+	var size: Dictionary = Defs.MAP_SIZES[setup.get("size", 0)]
 	gs.w = size["w"]
 	gs.h = size["h"]
 	gs.mode = setup.get("mode", Mode.CONQUEST)
@@ -1160,8 +1153,6 @@ static func create(setup: Dictionary) -> GameState:
 		pl.color = ps["color"]
 		pl.ai = ps.get("ai", false)
 		pl.gold = Defs.START_GOLD
-		pl.wood = Defs.START_WOOD
-		pl.stone = Defs.START_STONE
 		pl.explored.resize(gs.w * gs.h)
 		gs.players.append(pl)
 	MapGen.generate(gs, rng)

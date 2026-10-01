@@ -30,7 +30,7 @@ var vis := PackedByteArray()
 var selected := -1
 var reach := {}
 var targets: Array[int] = []
-var pending_target := -1
+var target_info := {}  # tile -> [damage, kills, would_lose_attacker]
 var plan: Array[int] = []
 var plan_kind := ""
 var plan_ok := {}
@@ -57,6 +57,8 @@ var mmi := {}       # key -> MultiMeshInstance3D
 var batch := {}     # key -> [Array[Transform3D], PackedColorArray]
 var unit_nodes := {}  # Unit -> Node3D
 var labels_root: Node3D
+var preview_root: Node3D
+var mat_pip: StandardMaterial3D
 var fx_root: Node3D
 var clouds_root: Node3D
 var font: Font
@@ -70,6 +72,8 @@ func _ready() -> void:
 	_setup_world()
 	labels_root = Node3D.new()
 	add_child(labels_root)
+	preview_root = Node3D.new()
+	add_child(preview_root)
 	fx_root = Node3D.new()
 	add_child(fx_root)
 	get_viewport().size_changed.connect(_apply_camera)
@@ -105,6 +109,8 @@ func _setup_materials() -> void:
 	mat_cloud.vertex_color_use_as_albedo = true
 	mat_cloud.vertex_color_is_srgb = true
 	mat_cloud.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat_pip = mat_overlay.duplicate()
+	mat_pip.render_priority = 3
 	mat_ghost = mat_overlay.duplicate()
 	mat_ghost.no_depth_test = false
 	mat_ghost.render_priority = 1
@@ -270,6 +276,9 @@ func _flush(keys_prefix: String) -> void:
 				"g":
 					inst.material_override = mat_ghost
 					inst.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+				"p":
+					inst.material_override = mat_pip
+					inst.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 				"c":
 					inst.material_override = mat_cloud
 					inst.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
@@ -332,6 +341,7 @@ func _build_static() -> void:
 	for t in gs.towns:
 		if explored(t.idx):
 			_town_label(t)
+	_flush("p:")
 
 
 func _tint(col: Color, dim: float) -> Color:
@@ -514,17 +524,27 @@ func _town(t: GameState.Town, c: Vector3, dim: float) -> void:
 		_add("s:pole", _xf(c + Vector3(-0.05, 0.0, -0.05)), white)
 
 
+## Town name, level badge and a bar of people (pips) toward the next level.
 func _town_label(t: GameState.Town) -> void:
 	var c := world(t.idx)
 	var col := _color_of(t.owner) if t.owner >= 0 else Color("#e8e2d6")
-	var pips := ""
-	for k in t.level:
-		pips += "•"
-	var l := _label(c + Vector3(0, 0.05, 0.78), t.name, Color.WHITE, 44)
+	var l := _label(c + Vector3(0, 0.05, 0.74), t.name, Color.WHITE, 42)
 	l.outline_modulate = col.darkened(0.45) if t.owner >= 0 else Color("#4a4038")
 	l.outline_size = 16
-	var p := _label(c + Vector3(0, -0.05, 0.98), pips, Icons.GOLD_C if t.capital else Color.WHITE, 56)
-	p.outline_size = 10
+	if t.owner < 0:
+		return
+	var need := gs.pop_need(t.level)
+	var step := 0.15
+	var width := need * step + 0.3
+	var base := c + Vector3(-width / 2.0, -0.04, 0.98)
+	var lv := _label(base + Vector3(0.1, 0.02, 0), str(t.level), Icons.GOLD_C, 40)
+	lv.outline_size = 14
+	lv.outline_modulate = Color(0.15, 0.1, 0.02)
+	var face := Basis(Vector3.RIGHT, -PITCH)
+	for k in need:
+		var pos := base + Vector3(0.32 + k * step, 0, 0)
+		var on := k < t.pop
+		_add("p:pip", Transform3D(face, pos), Color("#7bd389") if on else Color(0.1, 0.12, 0.15, 0.75))
 
 
 func _label(pos: Vector3, text: String, col: Color, size: int) -> Label3D:
@@ -551,11 +571,30 @@ func _build_overlay() -> void:
 	var lift := 0.06
 	for i in reach:
 		_add("o:dot", _xf(world(i) + Vector3(0, lift, 0)), Color(1, 1, 1, 0.9))
+	for c in preview_root.get_children():
+		c.queue_free()
 	for i in targets:
-		var s := 1.12 if i == pending_target else 0.95
-		_add("o:ring", _xf(world(i) + Vector3(0, lift, 0), 0.0, s), Color("#ff3b3b"))
-		if i == pending_target:
-			_add("o:hexfill", _xf(world(i) + Vector3(0, lift, 0)), Color(1, 0.2, 0.2, 0.25))
+		_add("o:ring", _xf(world(i) + Vector3(0, lift, 0), 0.0, 0.95), Color("#ff3b3b"))
+		_add("o:hexfill", _xf(world(i) + Vector3(0, lift, 0)), Color(1, 0.2, 0.2, 0.18))
+		if target_info.has(i):
+			var info: Array = target_info[i]
+			var text := "-%d" % info[0]
+			if info[1]:
+				text += " KO"
+			var pl := Label3D.new()
+			pl.text = text
+			pl.font = font
+			pl.font_size = 50
+			pl.pixel_size = 0.006
+			pl.modulate = Color("#ffffff")
+			pl.outline_size = 18
+			pl.outline_modulate = Color("#c0262b") if not info[2] else Color("#5a1010")
+			pl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+			pl.no_depth_test = true
+			pl.render_priority = 6
+			pl.outline_render_priority = 5
+			pl.position = world(i) + Vector3(0.05, 1.75, 0)
+			preview_root.add_child(pl)
 	if capture_hint >= 0:
 		_add("o:ring", _xf(world(capture_hint) + Vector3(0, lift, 0), 0.0, 1.15), Color(Icons.GOLD_C, 0.95))
 	if selected >= 0:

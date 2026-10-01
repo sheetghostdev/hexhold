@@ -73,10 +73,7 @@ static func encode_bytes(gs: GameState) -> PackedByteArray:
 		_put_str(b, p.name)
 		b.put_u8(p.color)
 		b.put_u16(clampi(p.gold, 0, 65535))
-		b.put_u16(clampi(p.wood, 0, 65535))
-		b.put_u16(clampi(p.stone, 0, 65535))
 		b.put_u8(p.keep)
-		b.put_u8(p.tax)
 		b.put_u8((1 if p.ai else 0) | (2 if p.alive else 0))
 		b.put_u32(p.seen_seq)
 		b.put_u16(p.kills)
@@ -96,9 +93,10 @@ static func encode_bytes(gs: GameState) -> PackedByteArray:
 	for t in gs.towns:
 		b.put_u16(t.idx)
 		b.put_8(t.owner)
-		b.put_u8(t.level)
-		b.put_u8(t.food)
-		b.put_u8((1 if t.walls else 0) | (2 if t.capital else 0) | (4 if t.feasted else 0))
+		b.put_u8(t.level | (t.reward << 4))
+		b.put_u8(t.pop)
+		b.put_u8(t.bonus)
+		b.put_u8((1 if t.walls else 0) | (2 if t.capital else 0) | (4 if t.big else 0))
 		var ni := Defs.TOWN_NAMES.find(t.name)
 		b.put_u8(ni if ni >= 0 else 255)
 		if ni < 0:
@@ -126,7 +124,7 @@ static func decode_bytes(data: PackedByteArray) -> GameState:
 	var gs := GameState.new()
 	var ver := b.get_u8()
 	if ver != GameState.VERSION:
-		push_warning("Unknown save version %d" % ver)
+		push_warning("Unsupported save version %d" % ver)
 		return null
 	gs.game_id = _get_str(b)
 	gs.map_seed = b.get_u32()
@@ -148,10 +146,7 @@ static func decode_bytes(data: PackedByteArray) -> GameState:
 		p.name = _get_str(b)
 		p.color = b.get_u8()
 		p.gold = b.get_u16()
-		p.wood = b.get_u16()
-		p.stone = b.get_u16()
 		p.keep = b.get_u8()
-		p.tax = b.get_u8()
 		var fl := b.get_u8()
 		p.ai = fl & 1 != 0
 		p.alive = fl & 2 != 0
@@ -186,12 +181,15 @@ static func decode_bytes(data: PackedByteArray) -> GameState:
 		var t := GameState.Town.new()
 		t.idx = b.get_u16()
 		t.owner = b.get_8()
-		t.level = b.get_u8()
-		t.food = b.get_u8()
+		var lv := b.get_u8()
+		t.level = lv & 15
+		t.reward = lv >> 4
+		t.pop = b.get_u8()
+		t.bonus = b.get_u8()
 		var fl := b.get_u8()
 		t.walls = fl & 1 != 0
 		t.capital = fl & 2 != 0
-		t.feasted = fl & 4 != 0
+		t.big = fl & 4 != 0
 		var ni := b.get_u8()
 		t.name = _get_str(b) if ni == 255 else Defs.TOWN_NAMES[mini(ni, Defs.TOWN_NAMES.size() - 1)]
 		gs.towns.append(t)

@@ -19,7 +19,6 @@ var sel_tile := -1
 var sel_town_focus := false  # tile has unit + town: show town instead
 var reach := {}
 var targets: Array[int] = []
-var pending_target := -1
 
 # painting roads / walls
 var paint := ""          # "", "road", "wall"
@@ -268,7 +267,6 @@ func _clear_selection() -> void:
 	sel_town_focus = false
 	reach = {}
 	targets = []
-	pending_target = -1
 	_push_highlights()
 
 
@@ -278,7 +276,7 @@ func _push_highlights() -> void:
 	board.selected = sel_tile
 	board.reach = reach
 	board.targets = targets
-	board.pending_target = pending_target
+	board.target_info = _target_info()
 	board.plan = plan
 	board.plan_kind = paint
 	board.capture_hint = -1
@@ -291,12 +289,22 @@ func _push_highlights() -> void:
 	board.refresh_overlay()
 
 
+## Damage previews shown over each red target: {tile: [damage, kills]}.
+func _target_info() -> Dictionary:
+	var out := {}
+	if sel_unit == null or not gs.units.has(sel_unit):
+		return out
+	for t in targets:
+		var fc := gs.forecast(sel_unit, t)
+		out[t] = [fc["dmg"], fc["kill"], fc.get("ret_kill", false)]
+	return out
+
+
 func _select_unit(u: GameState.Unit) -> void:
 	Sfx.play("tap")
 	sel_unit = u
 	sel_tile = u.idx
 	sel_town_focus = false
-	pending_target = -1
 	if u.owner == gs.cur and is_my_turn():
 		reach = gs.reachable(u)
 		targets = gs.attack_targets(u)
@@ -313,7 +321,6 @@ func _select_tile(i: int, town_focus: bool = false) -> void:
 	sel_town_focus = town_focus
 	reach = {}
 	targets = []
-	pending_target = -1
 	_push_highlights()
 	hud.show_selection()
 
@@ -345,12 +352,7 @@ func _tap(world: Vector2) -> void:
 		return
 	if sel_unit != null and is_my_turn() and sel_unit.owner == gs.cur:
 		if targets.has(i):
-			if pending_target == i:
-				do_attack(i)
-			else:
-				pending_target = i
-				_push_highlights()
-				hud.show_selection()
+			do_attack(i)
 			return
 		if reach.has(i):
 			do_move(sel_unit, i)
@@ -403,6 +405,7 @@ func _after_action(keep_undo: bool = true) -> void:
 	board.refresh()
 	hud.refresh_all()
 	_save()
+	_check_reward()
 	if gs.winner >= 0:
 		await get_tree().create_timer(0.8).timeout
 		_set_mode(Mode.OVER)
@@ -432,7 +435,7 @@ func do_move(u: GameState.Unit, target: int) -> void:
 	mode = Mode.PLAY
 	Net.vibrate(10)
 	for n in notes:
-		Sfx.play("coin")
+		Sfx.play("capture" if n["kind"] == "capture" else "coin")
 		hud.toast(n["text"], UI.ACCENT)
 		board.burst(gs.center(target), Icons.GOLD_C)
 	var random_outcome := feature_before == Defs.F.RUIN or feature_before == Defs.F.CAMP
@@ -525,37 +528,32 @@ func do_build(b: int) -> void:
 	_select_tile(sel_tile)
 
 
-func do_demolish() -> void:
-	_snapshot()
-	gs.demolish(gs.cur, sel_tile)
-	_after_action(true)
-	_select_tile(sel_tile)
-
-
-func do_fortify() -> void:
-	var t := gs.town_on(sel_tile)
-	if t == null:
+## A town just levelled up: let the player pick its reward.
+func _check_reward() -> void:
+	if not is_my_turn():
 		return
-	_snapshot()
-	if gs.fortify(t):
-		Sfx.play("build")
-		board.burst(gs.center(t.idx), Color.WHITE)
-	_after_action(true)
-	_select_tile(sel_tile, true)
+	var t := gs.pending_reward(gs.cur)
+	if t != null and not hud.has_modal():
+		Sfx.play("capture")
+		board.burst(gs.center(t.idx), Icons.GOLD_C)
+		hud.show_reward(t)
 
 
-func do_feast() -> void:
-	var t := gs.town_on(sel_tile)
-	if t == null:
-		return
-	_snapshot()
-	var lvl := t.level
-	if gs.feast(t):
+func do_choose_reward(t: GameState.Town, option: int) -> void:
+	var r := gs.choose_reward(t, option)
+	hud.close_modal()
+	if r >= 0:
+		var info: Dictionary = Defs.REWARDS[r]
+		hud.toast("%s: %s" % [info["name"], info["desc"]], UI.ACCENT)
 		Sfx.play("coin")
-		board.burst(gs.center(t.idx), Icons.WHEAT)
-		hud.toast("A feast in %s! %s" % [t.name, "It grew to level %d!" % t.level if t.level > lvl else "+%d food" % Defs.FEAST_FOOD], UI.GOOD)
-	_after_action(true)
-	_select_tile(sel_tile, true)
+	undo_stack.clear()
+	board.refresh()
+	hud.refresh_all()
+	_save()
+	if r == Defs.R.EXPLORER or r == Defs.R.BORDERS:
+		focus_tile(t.idx)
+	await get_tree().process_frame
+	_check_reward()
 
 
 func do_disband() -> void:
@@ -576,18 +574,6 @@ func do_upgrade_keep() -> void:
 		if cap:
 			board.burst(gs.center(cap.idx), Icons.GOLD_C)
 	_after_action(true)
-
-
-func do_set_tax(t: int) -> void:
-	_snapshot()
-	gs.players[gs.cur].tax = t
-	_after_action(true)
-
-
-func cancel_attack() -> void:
-	pending_target = -1
-	_push_highlights()
-	hud.show_selection()
 
 
 # ---------------------------------------------------------------- painting
@@ -619,7 +605,7 @@ func _plan_problem(i: int) -> String:
 		return gs.road_problem(gs.cur, i)
 	if paint == "wall":
 		var p := gs.build_problem(gs.cur, i, Defs.B.WALL)
-		if p.begins_with("Costs"):
+		if p == "Not enough gold":
 			return ""
 		return p
 	return "?"
@@ -685,14 +671,12 @@ func _after_plan_change() -> void:
 	hud.refresh_bottom()
 
 
-func plan_cost() -> Array:
-	var total := [0, 0, 0]
+func plan_cost() -> int:
+	var total := 0
 	for i in plan:
 		if _plan_problem(i) != "":
 			continue
-		var c: Array = gs.road_cost(i) if paint == "road" else Defs.BUILDINGS[Defs.B.WALL]["cost"]
-		for k in 3:
-			total[k] += c[k]
+		total += gs.road_cost(i) if paint == "road" else int(Defs.BUILDINGS[Defs.B.WALL]["cost"])
 	return total
 
 
@@ -842,5 +826,12 @@ func _debug_dump(_args: Array) -> void:
 			tg = gs.attack_targets(u)
 			rc = gs.reachable(u).keys()
 		us.append({ "type": Defs.UNITS[u.type]["name"], "owner": u.owner, "idx": u.idx, "pos": [roundi(p.x), roundi(p.y)], "targets": tg, "reach": rc })
-	var info := { "vp": [vp.x, vp.y], "cur": gs.cur, "tiles": tiles, "units": us }
+	var land := []
+	for i in gs.n_tiles():
+		if gs.tile_owner(i) == gs.cur and gs.building[i] == Defs.B.NONE and not gs.town_at.has(i) and gs.terrain[i] != Defs.T.WATER:
+			land.append([i, Defs.TERRAIN_NAMES[gs.terrain[i]]])
+	var towns := []
+	for t in gs.player_towns(gs.cur):
+		towns.append(t.idx)
+	var info := { "vp": [vp.x, vp.y], "cur": gs.cur, "tiles": tiles, "units": us, "land": land, "towns": towns }
 	JavaScriptBridge.eval("window.hexDebugResult = %s" % JSON.stringify(JSON.stringify(info)), true)

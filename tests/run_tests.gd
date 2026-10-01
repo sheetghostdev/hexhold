@@ -14,6 +14,7 @@ func _init() -> void:
 	test_hex()
 	test_codec_roundtrip()
 	test_rules()
+	test_growth()
 	test_ai_games()
 	if failures == 0:
 		print("ALL TESTS PASSED")
@@ -92,6 +93,35 @@ func test_rules() -> void:
 	check(built, "found farm spot")
 
 
+func test_growth() -> void:
+	var gs := make_game(2, 0, 321)
+	var cap := gs.capital_of(0)
+	gs.players[0].gold = 100
+	var built := 0
+	for j in gs.neighbors(cap.idx):
+		for b in [Defs.B.FARM, Defs.B.LUMBER, Defs.B.MINE]:
+			if gs.build_problem(0, j, b) == "":
+				gs.build(0, j, b)
+				built += 1
+				break
+	check(built >= 2, "could build around capital (%d)" % built)
+	check(cap.level >= 2, "capital grew from buildings (level %d)" % cap.level)
+	var t := gs.pending_reward(0)
+	check(t != null, "level-up offers a reward")
+	if t != null:
+		var r := gs.choose_reward(t, 0)
+		check(r >= 0 and t.reward == 0, "reward applied and cleared")
+	# villages are claimed by walking in
+	var g2 := make_game(2, 0, 77)
+	for v in g2.towns:
+		if v.owner == -1:
+			var u := g2.spawn_unit(Defs.U.SPEARMAN, g2.neighbors(v.idx)[0], 0)
+			if g2.reachable(u).has(v.idx):
+				g2.move_unit(u, v.idx)
+				check(v.owner == 0, "village captured on arrival")
+				break
+
+
 func test_ai_games() -> void:
 	var max_len := 0
 	var wins := 0
@@ -107,7 +137,10 @@ func test_ai_games() -> void:
 				var st := []
 				for p in gs.players.size():
 					var inc := gs.income(p)
-					st.append("P%d g%d(+%d) w%d(+%d) s%d u%d t%d k%d" % [p, gs.players[p].gold, inc["gold"], gs.players[p].wood, inc["wood"], gs.players[p].stone, gs.player_units(p).size(), gs.player_towns(p).size(), gs.players[p].keep])
+					var lv := 0
+					for t in gs.player_towns(p):
+						lv += t.level
+					st.append("P%d g%d(+%d) u%d t%d lv%d k%d" % [p, gs.players[p].gold, inc["gold"], gs.player_units(p).size(), gs.player_towns(p).size(), lv, gs.players[p].keep])
 				print("   turn %d: %s" % [gs.turn, " | ".join(st)])
 			if safety % 7 == 0:
 				var code := Codec.encode(gs)

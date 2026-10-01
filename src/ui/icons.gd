@@ -66,6 +66,10 @@ static func unit_glyph(ci: CanvasItem, type: int, c: Vector2, r: float, col: Col
 			ci.draw_circle(c + Vector2(-0.5, -0.56) * r, r * 0.17, col)
 			ci.draw_circle(c + Vector2(-0.35, 0.45) * r, r * 0.2, col)
 			ci.draw_circle(c + Vector2(0.35, 0.45) * r, r * 0.2, col)
+		Defs.U.CHAMPION:
+			ci.draw_colored_polygon(_pts(c, r, [[-0.6, 0.1], [-0.6, -0.5], [-0.3, -0.2], [0, -0.65], [0.3, -0.2], [0.6, -0.5], [0.6, 0.1]]), GOLD_C)
+			ci.draw_line(c + Vector2(0, 0.2) * r, c + Vector2(0, 0.75) * r, col, lw, true)
+			ci.draw_line(c + Vector2(-0.3, 0.32) * r, c + Vector2(0.3, 0.32) * r, col, lw, true)
 		Defs.U.BANDIT:
 			ci.draw_line(c + Vector2(-0.5, 0.55) * r, c + Vector2(0.45, -0.5) * r, col, lw, true)
 			ci.draw_line(c + Vector2(0.5, 0.55) * r, c + Vector2(-0.45, -0.5) * r, col, lw, true)
@@ -108,6 +112,34 @@ static func resource(ci: CanvasItem, kind: String, c: Vector2, r: float) -> void
 			star(ci, c, r, GOLD_C)
 		"castle":
 			castle(ci, c + Vector2(0, r * 0.2), r * 1.1, Color("#d8d1c2"), Color("#3d7be0"))
+		"people":
+			for k in 2:
+				var o := Vector2((k - 0.5) * 0.7, 0) * r
+				var col := Color("#7bd389") if k == 0 else Color("#5fb873")
+				ci.draw_circle(c + o + Vector2(0, -0.35) * r, r * 0.26, col)
+				ci.draw_colored_polygon(_pts(c + o, r, [[-0.4, 0.75], [-0.3, 0.0], [0.3, 0.0], [0.4, 0.75]]), col)
+		"bulb":
+			ci.draw_circle(c + Vector2(0, -0.15) * r, r * 0.55, Color("#ffd84d"))
+			ci.draw_colored_polygon(_pts(c, r, [[-0.25, 0.3], [0.25, 0.3], [0.2, 0.7], [-0.2, 0.7]]), Color("#c9c3b6"))
+			ci.draw_circle(c + Vector2(-0.18, -0.3) * r, r * 0.13, Color(1, 1, 1, 0.7))
+		"eye":
+			ci.draw_colored_polygon(_ellipse(c, r * 0.95, r * 0.55, 16), Color("#e8f1f8"))
+			ci.draw_circle(c, r * 0.36, Color("#3d7be0"))
+			ci.draw_circle(c, r * 0.16, DARK)
+		"chest":
+			ci.draw_colored_polygon(_pts(c, r, [[-0.8, -0.1], [0.8, -0.1], [0.8, 0.65], [-0.8, 0.65]]), WOOD_C)
+			ci.draw_colored_polygon(_pts(c, r, [[-0.8, -0.1], [-0.6, -0.55], [0.6, -0.55], [0.8, -0.1]]), WOOD_LIGHT)
+			ci.draw_circle(c + Vector2(0, -0.45) * r, r * 0.2, GOLD_C)
+			ci.draw_rect(Rect2(c + Vector2(-0.12, 0.05) * r, Vector2(0.24, 0.25) * r), GOLD_C)
+		"border":
+			var pts := PackedVector2Array()
+			for k in 7:
+				var a := deg_to_rad(60.0 * k - 30.0)
+				pts.append(c + Vector2(cos(a), sin(a)) * r * 0.9)
+			ci.draw_polyline(pts, Color("#7bb6ff"), maxf(2.0, r * 0.14), true)
+			ci.draw_circle(c, r * 0.22, Color("#7bb6ff"))
+		"champion":
+			unit_token(ci, Defs.U.CHAMPION, c, r, Color("#c08a2b"))
 
 
 static func _ellipse(c: Vector2, rx: float, ry: float, seg: int = 12) -> PackedVector2Array:

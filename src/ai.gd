@@ -18,7 +18,6 @@ static func play_turn(gs: GameState) -> void:
 	_recruit(gs, p)
 	_build(gs, p)
 	_roads(gs, p)
-	_feasts(gs, p)
 
 
 # ---------------------------------------------------------------- units
@@ -150,22 +149,31 @@ static func _value_at(gs: GameState, u: GameState.Unit, idx: int, goals: Array) 
 # ---------------------------------------------------------------- economy
 
 static func _economy(gs: GameState, p: int) -> void:
+	_rewards(gs, p)
 	var pl := gs.players[p]
 	var army := gs.player_units(p).size()
-	if pl.keep < 3 and army >= 3 and gs.keep_problem(p) == "":
+	if pl.keep < 3 and army >= 3 and gs.keep_problem(p) == "" and pl.gold >= Defs.KEEP_COST[pl.keep + 1] + 3:
 		gs.upgrade_keep(p)
-	var towns := gs.player_towns(p)
-	var avg := 0.0
-	for t in towns:
-		avg += t.level
-	if towns.size() > 0:
-		avg /= towns.size()
-	pl.tax = Defs.TAX.HIGH if avg >= 3.5 else Defs.TAX.FAIR
+
+
+static func _rewards(gs: GameState, p: int) -> void:
+	var t := gs.pending_reward(p)
+	while t != null:
+		var opts := Defs.rewards_for(t.reward)
+		var pick := 0
+		if opts.has(Defs.R.CHAMPION):
+			pick = opts.find(Defs.R.CHAMPION)
+		elif opts.has(Defs.R.WALLS) and t.capital:
+			pick = opts.find(Defs.R.WALLS)
+		elif opts.has(Defs.R.BORDERS):
+			pick = opts.find(Defs.R.BORDERS)
+		gs.choose_reward(t, pick)
+		t = gs.pending_reward(p)
 
 
 static func _recruit(gs: GameState, p: int) -> void:
 	var pl := gs.players[p]
-	var reserve: int = 0 if pl.keep >= 3 else Defs.KEEP_COST[pl.keep + 1][0] / 3
+	var reserve: int = 0 if pl.keep >= 3 else Defs.KEEP_COST[pl.keep + 1] / 3
 	for t in gs.player_towns(p):
 		if gs.player_units(p).size() >= gs.unit_cap(p):
 			return
@@ -181,8 +189,8 @@ static func _recruit(gs: GameState, p: int) -> void:
 		var start := posmod(gs.turn + t.idx, choices.size())
 		for k in choices.size():
 			var type := choices[(start + k) % choices.size()]
-			var cost: Array = Defs.UNITS[type]["cost"]
-			if pl.gold - cost[0] < reserve and gs.turn > 3:
+			var cost: int = Defs.UNITS[type]["cost"]
+			if pl.gold - cost < reserve and gs.turn > 3:
 				continue
 			if gs.recruit_problem(t, type) == "":
 				gs.recruit(t, type)
@@ -192,47 +200,45 @@ static func _recruit(gs: GameState, p: int) -> void:
 static func _build(gs: GameState, p: int) -> void:
 	var pl := gs.players[p]
 	var enemy_near := {}
+	for o in gs.units:
+		if o.owner >= 0 and o.owner != p:
+			for j in gs.tiles_in_range(o.idx, 3):
+				enemy_near[j] = true
+	# best-value buildings first: people per gold
+	var options: Array = []
 	for i in gs.n_tiles():
-		if gs.tile_owner(i) != p:
-			continue
-		for o in gs.units:
-			if o.owner >= 0 and o.owner != p and gs.dist(o.idx, i) <= 3:
-				enemy_near[i] = true
-				break
-	var tries := 0
-	for i in gs.n_tiles():
-		if tries > 8:
-			break
 		if gs.tile_owner(i) != p or gs.building[i] != Defs.B.NONE or gs.town_at.has(i):
 			continue
-		var want := Defs.B.NONE
-		match gs.terrain[i]:
-			Defs.T.PLAINS:
-				want = Defs.B.FARM
+		for b in [Defs.B.FARM, Defs.B.LUMBER, Defs.B.MINE, Defs.B.MARKET, Defs.B.TOWER]:
+			if gs.build_problem(p, i, b) != "":
+				continue
+			var cost: int = Defs.BUILDINGS[b]["cost"]
+			var value := float(gs.build_pop(i, b)) / maxf(1.0, cost)
+			if b == Defs.B.MARKET:
 				var adj := 0
 				for j in gs.neighbors(i):
-					var b := gs.building[j]
-					if b == Defs.B.FARM or b == Defs.B.LUMBER or b == Defs.B.QUARRY or b == Defs.B.MINE:
+					var nb := gs.building[j]
+					if nb == Defs.B.FARM or nb == Defs.B.LUMBER or nb == Defs.B.MINE:
 						adj += 1
-				if adj >= 3 and pl.keep >= 2:
-					want = Defs.B.MARKET
-			Defs.T.FOREST:
-				want = Defs.B.LUMBER
-			Defs.T.HILLS:
-				want = Defs.B.MINE if gs.feature[i] == Defs.F.GOLD else Defs.B.QUARRY
-			Defs.T.MOUNTAIN:
-				if gs.feature[i] == Defs.F.GOLD:
-					want = Defs.B.MINE
-		if enemy_near.has(i) and pl.keep >= 2 and gs.terrain[i] != Defs.T.MOUNTAIN:
-			want = Defs.B.TOWER
-		if want != Defs.B.NONE and gs.build_problem(p, i, want) == "":
-			gs.build(p, i, want)
-			tries += 1
+				value = 0.12 * adj
+			elif b == Defs.B.TOWER:
+				value = 0.5 if enemy_near.has(i) else 0.0
+			if value > 0.0:
+				options.append([value, i, b])
+	options.sort_custom(func(a, b): return a[0] > b[0])
+	var spent := 0
+	for o in options:
+		if spent >= 4 or pl.gold < 3:
+			break
+		if gs.build_problem(p, o[1], o[2]) == "":
+			gs.build(p, o[1], o[2])
+			spent += 1
+			_rewards(gs, p)
 
 
 static func _roads(gs: GameState, p: int) -> void:
 	var cap := gs.capital_of(p)
-	if cap == null or gs.players[p].wood < 3:
+	if cap == null or gs.players[p].gold < 10:
 		return
 	var linked := gs.connected_towns(p)
 	for t in gs.player_towns(p):
@@ -242,7 +248,7 @@ static func _roads(gs: GameState, p: int) -> void:
 		if path.is_empty() or path.size() > 10:
 			continue
 		for i in path:
-			if gs.players[p].wood < 2:
+			if gs.players[p].gold < 6:
 				return
 			if not gs.has_road(i):
 				gs.build_road(p, i)
@@ -274,14 +280,3 @@ static func _road_path(gs: GameState, p: int, from: int, to: int) -> Array[int]:
 		path.push_front(c)
 		c = prev[c]
 	return path
-
-
-static func _feasts(gs: GameState, p: int) -> void:
-	## Spend spare gold on growth, smallest towns first.
-	var towns := gs.player_towns(p)
-	towns.sort_custom(func(a, b): return a.level < b.level)
-	for t in towns:
-		if gs.players[p].gold < 25:
-			return
-		if gs.feast_problem(t) == "":
-			gs.feast(t)

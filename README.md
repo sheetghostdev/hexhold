@@ -26,25 +26,23 @@ under 1,400 even in big late games, so it fits in a Discord message.
 
 ## Features
 
-- **Hex map**, procedurally generated with fair starting positions, villages,
-  ruins, bandit camps, fertile soil, stone and gold veins.
-- **Roads you draw with your finger.** Tap *Road* and drag across tiles. Roads
-  join up automatically into a clean network. Road-to-road moves cost half,
-  bridges cross water, and a road from a town to your capital is a **trade route**
-  (+1 gold per turn).
-- **Stronghold-style walls.** Tap *Wall* and drag. Walls join up with crenellations,
-  block enemies, and give your own troops on them double defence. Archers on walls
-  shoot further. **Towers** shoot the nearest enemy every turn. **Catapults**
-  ignore fortifications and smash them.
-- **Economy:** gold, wood and stone. Farms grow towns, lumber camps and quarries
-  feed construction, and markets earn gold from their neighbours (so layout matters).
-  Soldiers draw wages, you can throw **feasts** to grow towns faster, and taxes
-  can be set to Generous, Fair or Harsh.
-- **Keep upgrades:** Wooden Keep → Stone Keep → Castle unlock new troops and buildings.
-- **Units:** Spearman (anti-cavalry), Archer, Swordsman, Knight (fast), Catapult (siege).
-  Units become veterans after 3 kills. Bandits guard loot.
-- **Phone-first UI:** big buttons, a battle forecast before every attack, Undo,
-  and a "what happened while you were away" summary each turn.
+- **One resource: gold.** Towns make gold every turn; you spend it on soldiers, buildings,
+  roads and walls.
+- **Towns grow from people.** Build a farm, lumber hut or mine on a town's land and it adds
+  people (the green bar under the town's name). A full bar levels the town up: more gold,
+  room for one more soldier, and you **pick a reward** (workshop, scouts, town walls,
+  treasure, bigger borders, a baby boom, a Champion hero...).
+- **Hex map**, procedurally generated with fair starts, free villages (just walk in),
+  ruins with treasure and bandit camps.
+- **Roads you draw with your finger.** Tap *Roads* and drag. They join up automatically,
+  double movement, and a road from a town to your capital is a trade route (+1 gold).
+- **Stronghold-style walls.** Tap *Walls* and drag. Enemies can't pass, and your soldiers on
+  walls defend twice as well. Towers shoot every turn; catapults wreck fortifications.
+- **Fast, readable combat:** tap a soldier, see white dots (moves) and red targets with the
+  damage you'd deal, tap once to attack. Knights can hit and run.
+- **Castle upgrades:** Wooden Keep, then Stone Keep, then Castle unlock stronger troops and buildings.
+- **Phone-first UI:** one gold counter, plain-English options with prices, a hint bar that
+  tells you what to do next, and Undo.
 - **Two victory modes:** Conquest, or Glory (highest score after 30 turns).
 
 ## Put it online (free, about 5 minutes)

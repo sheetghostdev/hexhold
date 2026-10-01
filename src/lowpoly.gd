@@ -195,6 +195,7 @@ static func get_mesh(key: String) -> ArrayMesh:
 			"star": _m_star(b)
 			"pole": _m_pole(b)
 			"blob": _m_blob(b)
+			"pip": _m_pip(b)
 			_: push_error("Unknown mesh " + key)
 		m = b.commit()
 	_cache[key] = m
@@ -396,6 +397,10 @@ static func _m_flag(b: Builder) -> void:
 	b.inside = Vector3(0.1, -0.1, -1000)
 	b.quad(Vector3(0, 0, 0), Vector3(0.26, -0.05, 0), Vector3(0.26, -0.15, 0), Vector3(0, -0.2, 0), W)
 	b.quad(Vector3(0, -0.2, 0), Vector3(0.26, -0.15, 0), Vector3(0.26, -0.05, 0), Vector3(0, 0, 0), W.darkened(0.15))
+
+
+static func _m_pip(b: Builder) -> void:
+	b.box(Vector3.ZERO, Vector3(0.12, 0.1, 0.02), W)
 
 
 static func _m_blob(b: Builder) -> void:

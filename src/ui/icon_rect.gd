@@ -26,6 +26,9 @@ func _draw() -> void:
 		"building":
 			if id == Defs.B.WALL or id == Defs.B.TOWER:
 				_draw_wall_icon(c, r)
+			elif id == Defs.B.MINE:
+				draw_colored_polygon(Hex.corners(c, r * 1.15), Color("#b5c46a"))
+				Icons.building(self, id, c, r * 1.4, color)
 			else:
 				draw_colored_polygon(Hex.corners(c, r * 1.15), Color("#6fae4f"))
 				Icons.building(self, id, c, r * 1.4, color)
@@ -52,6 +55,8 @@ func _draw() -> void:
 			draw_circle(c + Vector2(-r * 0.5, 0), r * 0.22, color)
 			draw_line(c + Vector2(-r * 0.5, 0), c + Vector2(r * 0.5, -r * 0.55), color, r * 0.12, true)
 			draw_line(c + Vector2(-r * 0.5, 0), c + Vector2(r * 0.5, r * 0.55), color, r * 0.12, true)
+		"capital":
+			Icons.castle(self, c + Vector2(0, r * 0.2), r * 1.1, Color("#e2dacb"), color)
 		"town":
 			Icons.house(self, c + Vector2(-r * 0.35, -r * 0.05), r * 0.6, Color("#efe6d2"), color)
 			Icons.house(self, c + Vector2(r * 0.4, r * 0.1), r * 0.5, Color("#efe6d2"), color.darkened(0.15))

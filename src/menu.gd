@@ -46,7 +46,7 @@ func _ready() -> void:
 			{ "name": "Brother", "color": 1, "ai": false },
 		],
 		"online": true,
-		"size": 1,
+		"size": 0,
 		"mode": GameState.Mode.CONQUEST,
 	}
 	show_main()
