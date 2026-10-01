@@ -5,6 +5,7 @@ extends RefCounted
 static var units := {}       # id -> UnitDef
 static var buildings := {}   # id -> BuildingDef
 static var obstacles := {}   # id -> ObstacleDef
+static var upgrades := {}    # id -> UpgradeDef
 static var obstacle_ids: Array[String] = []  # index + 1 is stored on the map
 static var rules: RulesDef
 static var _loaded := false
@@ -20,6 +21,8 @@ static func load_all() -> void:
 		buildings[r.id] = r
 	for r in _load_dir("res://data/obstacles"):
 		obstacles[r.id] = r
+	for r in _load_dir("res://data/upgrades"):
+		upgrades[r.id] = r
 	obstacle_ids.assign(obstacles.keys())
 	obstacle_ids.sort()
 	rules = load("res://data/rules.tres")
@@ -69,5 +72,17 @@ static func sorted_units() -> Array:
 static func sorted_buildings() -> Array:
 	load_all()
 	var arr := buildings.values()
+	arr.sort_custom(func(a, b): return a.sort < b.sort)
+	return arr
+
+
+static func upgrade(id: String) -> UpgradeDef:
+	load_all()
+	return upgrades.get(id)
+
+
+static func sorted_upgrades() -> Array:
+	load_all()
+	var arr := upgrades.values()
 	arr.sort_custom(func(a, b): return a.sort < b.sort)
 	return arr

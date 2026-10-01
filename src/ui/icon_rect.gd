@@ -67,6 +67,12 @@ func _draw() -> void:
 			MilIcons.fuel(self, c, r)
 		"power":
 			MilIcons.power(self, c, r)
+		"research":
+			draw_circle(c, r, Color("#2c3e50"))
+			draw_arc(c, r, 0, TAU, 24, color, r * 0.12, true)
+			for k in 2:
+				var y := c.y + r * (0.3 - k * 0.45)
+				draw_polyline(PackedVector2Array([Vector2(c.x - r * 0.45, y + r * 0.2), Vector2(c.x, y - r * 0.2), Vector2(c.x + r * 0.45, y + r * 0.2)]), color, r * 0.18, true)
 		"mil_unit":
 			MilIcons.unit(self, tag, c, r, color)
 		"mil_building":

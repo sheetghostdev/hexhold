@@ -5,10 +5,10 @@
 [resource]
 script = ExtResource("1")
 map_radius = 5
-start_alloy = 10
-start_fuel = 10
-hq_income_alloy = 2
-hq_income_fuel = 1
+start_alloy = 12
+start_fuel = 12
+hq_income_alloy = 3
+hq_income_fuel = 3
 turn_seconds = 60
 turn_limit = 12
 unit_cap = 8

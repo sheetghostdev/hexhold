@@ -290,6 +290,15 @@ func do_clear(target: int) -> void:
 	select_unit(u)
 
 
+func do_research(id: String) -> void:
+	var res := _send({ "type": "research", "upgrade": id })
+	if not res["ok"]:
+		return
+	Sfx.play("coin")
+	hud.toast("Research started: %s" % DB.upgrade(id).name, UI.ACCENT)
+	hud.refresh_all()
+
+
 func do_train(b: MatchState.Building, unit_id: String) -> void:
 	var res := _send({ "type": "train", "building": b.id, "unit": unit_id })
 	if not res["ok"]:
@@ -297,7 +306,7 @@ func do_train(b: MatchState.Building, unit_id: String) -> void:
 	Sfx.play("coin")
 	board.refresh()
 	for e in res["events"]:
-		board.burst(m.center_px(e["at"]), board.color_of(me))
+		board.burst(m.center_px(e["at"][0]), board.color_of(me))
 	hud.refresh_all()
 	select_building(b)
 
@@ -352,7 +361,7 @@ func end_turn() -> void:
 	if _check_over():
 		return
 	# your own start-of-turn news: finished jobs, drill income, new buildings
-	var mine := enemy_events.filter(func(e): return e["p"] == me and e["type"] in ["cleared", "drill", "built"])
+	var mine := enemy_events.filter(func(e): return e["p"] == me and e["type"] in ["cleared", "drill", "built", "researched"])
 	_animate_events(mine)
 	var seen := 0
 	for e in enemy_events:
@@ -437,13 +446,16 @@ func _animate_events(evs: Array, move_from := Vector2.INF) -> void:
 				if e["fuel"] > 0:
 					parts.append("+%d Fuel" % e["fuel"])
 				board.float_text(m.center_px(e["at"][0]), " ".join(parts), Color("#ffe08a"))
+			"researched":
+				if e["p"] == me:
+					hud.toast("Research done: %s" % DB.upgrade(e["upgrade"]).name, Color("#9ff0a8"))
 			"build", "built":
 				board.burst(m.center_px(e["at"][0]), board.color_of(e["p"]))
 			"spawn":
 				board.burst(m.center_px(e["at"][0]), board.color_of(e["p"]))
 			"destroyed":
 				board.burst(m.center_px(e["at"][0]), Color("#ffb347"))
-				hud.toast("%s destroyed!" % DB.building(e["type"]).name, Color("#ff9b8f"))
+				hud.toast("%s destroyed!" % DB.building(e["what"]).name, Color("#ff9b8f"))
 
 
 ## Test-only commands (?debug): {"cheat": n} adds resources, or any

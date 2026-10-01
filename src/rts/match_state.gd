@@ -18,6 +18,9 @@ class PlayerState:
 	var fuel := 0
 	var explored := PackedByteArray()
 	var seen_seq := 0
+	var researched: Array[String] = []
+	var research := ""       # upgrade in progress
+	var research_left := 0
 
 
 class Building:
@@ -205,6 +208,31 @@ func obstacle_def(i: int) -> ObstacleDef:
 	return DB.obstacle_at(obstacle[i])
 
 
+# ---------------------------------------------------------------- stats
+
+## Research bonus for a unit/building type of player p.
+func bonus(p: int, type: String, stat: String) -> float:
+	if p < 0 or p >= players.size():
+		return 0.0
+	var total := 0.0
+	var is_unit := DB.unit(type) != null
+	for id in players[p].researched:
+		var fx: Dictionary = DB.upgrade(id).effects
+		total += float(fx.get(type + "." + stat, 0.0))
+		if is_unit:
+			total += float(fx.get("units." + stat, 0.0))
+	return total
+
+
+## A unit's stat including research (attack, defense, move, attack_range, vision).
+func ustat(u: UnitS, stat: String) -> float:
+	return float(u.def().get(stat)) + bonus(u.owner, u.type, stat)
+
+
+func bstat(b: Building, stat: String) -> float:
+	return float(b.def().get(stat)) + bonus(b.owner, b.type, stat)
+
+
 # ---------------------------------------------------------------- territory
 
 ## Owner of each hex: the nearest building that covers it wins;
@@ -252,7 +280,7 @@ func power(p: int, planned := false) -> Dictionary:
 	var users: Array[Building] = []
 	for b in buildings:
 		if b.owner == p and (b.build_left == 0 or planned):
-			supply += b.def().power_supply
+			supply += int(bstat(b, "power_supply"))
 			demand += b.def().power_use
 			if b.def().power_use > 0:
 				users.append(b)
@@ -286,7 +314,7 @@ func visible_for(p: int) -> PackedByteArray:
 	else:
 		for u in units:
 			if u.owner == p:
-				for j in in_range(u.idx, u.def().vision):
+				for j in in_range(u.idx, int(ustat(u, "vision"))):
 					v[j] = 1
 		for b in buildings:
 			if b.owner == p:
@@ -337,7 +365,7 @@ func reachable(u: UnitS) -> Dictionary:
 	var out := {}
 	if u.moved or u.fresh or u.attacked:
 		return out
-	var pts := u.def().move * 2
+	var pts := int(ustat(u, "move")) * 2
 	var best := { u.idx: pts }
 	var parent := { u.idx: -1 }
 	var open: Array[int] = [u.idx]
@@ -396,7 +424,7 @@ func attack_targets(u: UnitS) -> Array[int]:
 	if u.attacked or u.fresh or d.attack <= 0.0:
 		return out
 	var vis := visible_for(u.owner)
-	for j in in_range(u.idx, d.attack_range):
+	for j in in_range(u.idx, int(ustat(u, "attack_range"))):
 		if j == u.idx or not vis[j]:
 			continue
 		var o := unit_on(j)
@@ -417,21 +445,23 @@ func defence_bonus(t: UnitS) -> float:
 ## Predicts an attack without changing anything.
 func forecast(att: UnitS, target: int) -> Dictionary:
 	var ad := att.def()
+	var a_atk := ustat(att, "attack")
 	var d := unit_on(target)
 	if d == null:
 		var b := building_on(target)
-		var bdmg := maxi(1, int(roundf(ad.attack * 1.5 * ad.vs_buildings)))
+		var bdmg := maxi(1, int(roundf(a_atk * 1.5 * ad.vs_buildings)))
 		return { "kind": "building", "dmg": bdmg, "ret": 0, "kill": bdmg >= b.hp, "ret_kill": false }
 	var dd := d.def()
-	var af := ad.attack * (float(att.hp) / ad.hp)
-	var df := dd.defense * (float(d.hp) / dd.hp) * defence_bonus(d)
+	var d_def := ustat(d, "defense")
+	var af := a_atk * (float(att.hp) / ad.hp)
+	var df := d_def * (float(d.hp) / dd.hp) * defence_bonus(d)
 	var total := af + df
-	var dmg := maxi(1, int(roundf(af / total * ad.attack * 4.5))) if total > 0.0 else 1
+	var dmg := maxi(1, int(roundf(af / total * a_atk * 4.5))) if total > 0.0 else 1
 	var kill := dmg >= d.hp
 	var ret := 0
-	if not kill and dist(att.idx, target) <= dd.attack_range and dd.attack > 0.0:
-		var df2 := dd.defense * (float(d.hp - dmg) / dd.hp) * defence_bonus(d)
-		ret = int(roundf(df2 / total * dd.defense * 4.5))
+	if not kill and dist(att.idx, target) <= int(ustat(d, "attack_range")) and dd.attack > 0.0:
+		var df2 := d_def * (float(d.hp - dmg) / dd.hp) * defence_bonus(d)
+		ret = int(roundf(df2 / total * d_def * 4.5))
 	return { "kind": "unit", "dmg": dmg, "ret": ret, "kill": kill, "ret_kill": ret >= att.hp }
 
 
@@ -456,6 +486,8 @@ func apply(p: int, cmd: Dictionary) -> Dictionary:
 			err = _cmd_build(p, cmd)
 		"clear":
 			err = _cmd_clear(p, cmd)
+		"research":
+			err = _cmd_research(p, cmd)
 		"end_turn":
 			err = _cmd_end_turn(p)
 		_:
@@ -568,7 +600,7 @@ func _cmd_train(p: int, cmd: Dictionary) -> String:
 	var u := spawn_unit(unit_id, spawn_spot(b), p)
 	u.fresh = true
 	update_explored(p)
-	_event(p, "spawn", [u.idx], { "unit": u.id, "type": unit_id, "at": u.idx, "from": b.idx })
+	_event(p, "spawn", [u.idx], { "unit": u.id, "what": unit_id, "from": b.idx })
 	return ""
 
 
@@ -636,6 +668,35 @@ func _cmd_clear(p: int, cmd: Dictionary) -> String:
 	return ""
 
 
+func research_problem(p: int, id: String) -> String:
+	var d := DB.upgrade(id)
+	if d == null:
+		return "Unknown research"
+	var pl := players[p]
+	if pl.researched.has(id):
+		return "Already researched"
+	if pl.research != "":
+		return "Busy researching %s" % DB.upgrade(pl.research).name
+	if hq_of(p) == null:
+		return "You need a Home Base"
+	return cost_problem(p, d.cost_alloy, d.cost_fuel)
+
+
+func _cmd_research(p: int, cmd: Dictionary) -> String:
+	var id: String = cmd.get("upgrade", "")
+	var err := research_problem(p, id)
+	if err != "":
+		return err
+	var d := DB.upgrade(id)
+	var pl := players[p]
+	pl.alloy -= d.cost_alloy
+	pl.fuel -= d.cost_fuel
+	pl.research = id
+	pl.research_left = d.turns
+	_event(p, "research", [hq_of(p).idx], { "upgrade": id })
+	return ""
+
+
 func cost_problem(p: int, alloy: int, fuel: int) -> String:
 	var need := []
 	if players[p].alloy < alloy:
@@ -661,7 +722,7 @@ func _cmd_build(p: int, cmd: Dictionary) -> String:
 	players[p].fuel -= d.cost_fuel
 	var b := place_building(type, i, p, false)
 	update_explored(p)
-	_event(p, "build", [i], { "building": b.id, "type": type, "owner": p })
+	_event(p, "build", [i], { "building": b.id, "what": type, "owner": p })
 	return ""
 
 
@@ -680,7 +741,7 @@ func _cmd_end_turn(p: int) -> String:
 		if players[nxt].alive:
 			break
 	cur = nxt
-	_event(-1, "turn", [], { "player": cur, "turn": turn })
+	_event(-1, "turn", [], { "player": cur })
 	_start_turn(cur)
 	return ""
 
@@ -696,8 +757,16 @@ func _start_turn(p: int) -> void:
 		if b.build_left > 0:
 			b.build_left -= 1
 			if b.build_left == 0:
-				_event(p, "built", [b.idx], { "building": b.id, "type": b.type })
+				_event(p, "built", [b.idx], { "building": b.id, "what": b.type })
 	_work(p)
+	if pl.research != "":
+		pl.research_left -= 1
+		if pl.research_left <= 0:
+			var id := pl.research
+			pl.research = ""
+			pl.researched.append(id)
+			var hq := hq_of(p)
+			_event(p, "researched", [hq.idx] if hq else [], { "upgrade": id })
 	for u in player_units(p):
 		if not u.moved and not u.attacked and not u.fresh:
 			u.hp = mini(u.def().hp, u.hp + (3 if owner_of(u.idx) == p else 1))
@@ -766,13 +835,13 @@ func _turrets_fire(p: int) -> void:
 		if d.attack <= 0.0 or not powered(b):
 			continue
 		var target: UnitS = null
-		for j in in_range(b.idx, d.attack_range):
+		for j in in_range(b.idx, int(bstat(b, "attack_range"))):
 			var o := unit_on(j)
 			if o != null and o.owner != p and (target == null or o.hp < target.hp):
 				target = o
 		if target == null:
 			continue
-		var dmg := int(roundf(d.attack))
+		var dmg := int(roundf(bstat(b, "attack")))
 		target.hp -= dmg
 		_event(p, "turret", [b.idx, target.idx], { "building": b.id, "target": target.idx, "dmg": dmg, "kill": target.hp <= 0 })
 		if target.hp <= 0:
@@ -790,7 +859,7 @@ func _destroy_building(b: Building, by: int) -> void:
 	buildings.erase(b)
 	building_at.erase(b.idx)
 	dirty()
-	_event(by, "destroyed", [b.idx], { "building": b.id, "type": b.type, "owner": b.owner })
+	_event(by, "destroyed", [b.idx], { "building": b.id, "what": b.type, "owner": b.owner })
 	if b.type == "hq":
 		_eliminate(b.owner)
 
@@ -868,6 +937,8 @@ func place_building(type: String, i: int, owner: int, finished: bool) -> Buildin
 func _event(p: int, type: String, at: Array, data: Dictionary) -> void:
 	seq += 1
 	var e := { "seq": seq, "turn": turn, "p": p, "type": type, "at": at }
+	for k in data:
+		assert(not e.has(k), "event data may not use the reserved key " + k)
 	e.merge(data)
 	events.append(e)
 

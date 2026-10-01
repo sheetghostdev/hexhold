@@ -1,0 +1,14 @@
+[gd_resource type="Resource" script_class="UpgradeDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://src/rts/defs/upgrade_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = "composite_armor"
+name = "Composite Armor"
+description = "Tanks +1.5 defense, Riflemen +1 defense."
+cost_alloy = 4
+cost_fuel = 4
+turns = 2
+effects = {"rifleman.defense": 1.0, "tank.defense": 1.5}
+sort = 2

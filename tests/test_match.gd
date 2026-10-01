@@ -19,6 +19,7 @@ func _init() -> void:
 	test_build()
 	test_power()
 	test_gather()
+	test_research()
 	test_ai_games()
 	print("ALL MATCH TESTS PASSED" if failures == 0 else "%d MATCH FAILURES" % failures)
 	quit(1 if failures > 0 else 0)
@@ -259,6 +260,30 @@ func test_gather() -> void:
 		m.players[0].alloy += 20
 		var br := m.apply(0, { "type": "build", "building": "wall", "at": out })
 		check(br["ok"], "engineer builds outside territory: " + br["error"])
+
+
+func test_research() -> void:
+	var m := new_match(17, false)
+	m.players[0].alloy = 50
+	m.players[0].fuel = 50
+	var supply: int = m.power(0)["supply"]
+	var r := m.apply(0, { "type": "research", "upgrade": "power_grid" })
+	check(r["ok"], "start research: " + r["error"])
+	check(m.research_problem(0, "recon_drones").begins_with("Busy"), "one research at a time")
+	for k in DB.upgrade("power_grid").turns:
+		m.apply(0, { "type": "end_turn" })
+		m.apply(1, { "type": "end_turn" })
+	check(m.players[0].researched.has("power_grid"), "research finishes")
+	check(m.power(0)["supply"] == supply + 3, "Power Grid adds power")
+	check(m.research_problem(0, "power_grid") == "Already researched", "can't research twice")
+	var rif: MatchState.UnitS = null
+	for u in m.player_units(0):
+		if u.type == "rifleman":
+			rif = u
+	var vis := m.ustat(rif, "vision")
+	m.players[0].researched.append("recon_drones")
+	check(m.ustat(rif, "vision") == vis + 1, "Recon Drones adds vision")
+	check(m.ustat(m.player_units(1)[0], "vision") == DB.unit(m.player_units(1)[0].type).vision, "upgrades are per player")
 
 
 func test_ai_games() -> void:

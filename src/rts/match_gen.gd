@@ -31,7 +31,7 @@ static func create(setup: Dictionary) -> MatchState:
 	m.rebuild_caches()
 	for p in m.players.size():
 		m.update_explored(p)
-	m._event(-1, "turn", [], { "player": 0, "turn": 1 })
+	m._event(-1, "turn", [], { "player": 0 })
 	m._start_turn(0)
 	return m
 

@@ -1,0 +1,14 @@
+[gd_resource type="Resource" script_class="UpgradeDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://src/rts/defs/upgrade_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = "power_grid"
+name = "Power Grid"
+description = "Power Plants make +3 power."
+cost_alloy = 3
+cost_fuel = 3
+turns = 2
+effects = {"power_plant.power_supply": 3}
+sort = 1

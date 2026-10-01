@@ -228,9 +228,9 @@ func _icon(kind: String, tag: String, col: Color) -> IconRect:
 func _unit_card(u: MatchState.UnitS) -> void:
 	var d := u.def()
 	var m := s.m
-	var stats := "%s · [color=#7bd389]%d/%d hp[/color] · move %d" % [_who(u.owner), u.hp, d.hp, d.move]
+	var stats := "%s · [color=#7bd389]%d/%d hp[/color] · move %d" % [_who(u.owner), u.hp, d.hp, int(m.ustat(u, "move"))]
 	if d.attack > 0.0:
-		stats += " · range %d" % d.attack_range
+		stats += " · range %d" % int(m.ustat(u, "attack_range"))
 	_header(_icon("mil_unit", u.type, s.board.color_of(u.owner)), d.name, stats)
 	card_box.add_child(_note(d.role))
 	if u.owner != s.me or not s.my_turn():
@@ -264,7 +264,7 @@ func _building_card(b: MatchState.Building) -> void:
 	var m := s.m
 	var sub := "%s · [color=#7bd389]%d/%d hp[/color]" % [_who(b.owner), b.hp, d.hp]
 	if d.power_supply > 0:
-		sub += " · [color=#ffd23f]+%d power[/color]" % d.power_supply
+		sub += " · [color=#ffd23f]+%d power[/color]" % int(m.bstat(b, "power_supply"))
 	if d.power_use > 0:
 		sub += " · [color=#ffd23f]uses %d power[/color]" % d.power_use
 	_header(_icon("mil_building", b.type, s.board.color_of(b.owner)), d.name, sub)
@@ -285,6 +285,30 @@ func _building_card(b: MatchState.Building) -> void:
 		var ud := DB.unit(unit_id)
 		var prob := m.train_problem(s.me, b, unit_id)
 		card_box.add_child(_row("mil_unit", unit_id, s.board.color_of(s.me), ud.name, ud.role, ud.cost_alloy, ud.cost_fuel, prob, s.do_train.bind(b, unit_id)))
+	if b.type == "hq":
+		_research_section()
+
+
+func _research_section() -> void:
+	var m := s.m
+	var pl := m.players[s.me]
+	var title := UI.label("RESEARCH", "Small")
+	title.add_theme_color_override("font_color", UI.ACCENT)
+	card_box.add_child(title)
+	if pl.research != "":
+		var d := DB.upgrade(pl.research)
+		card_box.add_child(_note("Researching [b]%s[/b]: done in %d turn%s." % [d.name, pl.research_left, "" if pl.research_left == 1 else "s"]))
+	for d in DB.sorted_upgrades():
+		if pl.researched.has(d.id) or pl.research == d.id:
+			continue
+		var prob := m.research_problem(s.me, d.id)
+		var eff: String = "%s (%d turns)" % [d.description, d.turns]
+		card_box.add_child(_row("research", "", UI.ACCENT, d.name, eff, d.cost_alloy, d.cost_fuel, prob, s.do_research.bind(d.id)))
+	if not pl.researched.is_empty():
+		var names := []
+		for id in pl.researched:
+			names.append(DB.upgrade(id).name)
+		card_box.add_child(_note("[color=#9ff0a8]Done:[/color] " + ", ".join(names)))
 
 
 func _tile_card(i: int) -> void:

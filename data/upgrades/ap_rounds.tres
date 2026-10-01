@@ -1,0 +1,14 @@
+[gd_resource type="Resource" script_class="UpgradeDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://src/rts/defs/upgrade_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = "ap_rounds"
+name = "AP Rounds"
+description = "Turrets +2 attack, Tanks +1 attack."
+cost_alloy = 4
+cost_fuel = 3
+turns = 2
+effects = {"tank.attack": 1.0, "turret.attack": 2.0}
+sort = 4
