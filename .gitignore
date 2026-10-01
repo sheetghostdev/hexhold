@@ -1,0 +1,7 @@
+# Godot
+.godot/
+export_credentials.cfg
+
+# Builds
+build/
+dist/
