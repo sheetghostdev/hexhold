@@ -14,6 +14,9 @@ var card_wrap: MarginContainer
 var card_box: VBoxContainer
 var bottom_box: HBoxContainer
 var toasts: VBoxContainer
+var alert_box: PanelContainer
+var alert_label: RichTextLabel
+var _last_off := {}
 var modal_root: Control
 
 
@@ -32,6 +35,16 @@ func setup(screen: MatchScreen) -> void:
 	root.add_child(col)
 
 	col.add_child(_top_bar())
+	alert_box = PanelContainer.new()
+	alert_box.add_theme_stylebox_override("panel", UI._box(Color("#7a1c1c"), 0, 10))
+	alert_label = UI.rich("")
+	alert_label.add_theme_font_size_override("normal_font_size", 20)
+	alert_label.add_theme_font_size_override("bold_font_size", 20)
+	alert_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	alert_box.add_child(alert_label)
+	alert_box.visible = false
+	alert_box.gui_input.connect(_on_power_input)
+	col.add_child(alert_box)
 	toasts = UI.vbox(8)
 	toasts.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var tm := UI.margin(toasts, 12)
@@ -98,6 +111,8 @@ func _top_bar() -> Control:
 	fuel_label = f[1]
 	var pw := _chip("power")
 	power_box = pw[0]
+	power_box.mouse_filter = Control.MOUSE_FILTER_STOP
+	power_box.gui_input.connect(_on_power_input)
 	row.add_child(power_box)
 	power_label = pw[1]
 	return bar
@@ -117,6 +132,19 @@ func refresh_all() -> void:
 	power_label.text = "%d/%d" % [pw["demand"], pw["supply"]]
 	var short: bool = pw["demand"] > pw["supply"]
 	power_label.add_theme_color_override("font_color", UI.BAD if short else UI.TEXT)
+	var off: Dictionary = pw["off"]
+	alert_box.visible = not off.is_empty()
+	if not off.is_empty():
+		var names := []
+		for b in m.player_buildings(s.me):
+			if off.has(b.id):
+				names.append(b.def().name)
+		alert_label.text = "[b]Low power (%d needed, %d made):[/b] %s switched off. Build a Power Plant." % [pw["demand"], pw["supply"], ", ".join(names)]
+		for id in off:
+			if not _last_off.has(id):
+				toast("Power shortage! A building switched off.", UI.BAD)
+				break
+	_last_off = off
 	_refresh_bottom()
 	show_selection()
 
@@ -232,6 +260,8 @@ func _building_card(b: MatchState.Building) -> void:
 	card_box.add_child(_note(d.description))
 	if b.owner != s.me:
 		return
+	if b.build_left == 0 and not m.powered(b):
+		card_box.add_child(_note("[color=#ff8a7a][b]Switched off: not enough power.[/b] When you need more power than you make, your newest buildings switch off first. Build a Power Plant.[/color]"))
 	if b.build_left > 0:
 		card_box.add_child(_note("[color=#ffd27a]Under construction: ready in %d turn%s.[/color]" % [b.build_left, "" if b.build_left == 1 else "s"]))
 		return
@@ -430,6 +460,24 @@ func _row(kind: String, tag: String, col: Color, title: String, effect: String, 
 	if b.disabled:
 		b.modulate = Color(1, 1, 1, 0.8)
 	return b
+
+
+func _on_power_input(e: InputEvent) -> void:
+	if (e is InputEventMouseButton or e is InputEventScreenTouch) and not e.pressed:
+		_show_power()
+
+
+func _show_power() -> void:
+	var pw := s.m.power(s.me)
+	var v := UI.vbox(14)
+	_title(v, "Power", "%d needed / %d made" % [pw["demand"], pw["supply"]], Color("#ffd23f"))
+	var txt := "Power Plants (and a little from your Home Base) make power. Most other buildings need it.\n\nIf you need more than you make, your [b]newest[/b] buildings switch off until the rest fits. They show a [color=#ff6b5b]red bolt[/color]: they can't train, shoot or drill.\n\nEnemy Power Plants are worth attacking!"
+	var r := UI.rich(txt)
+	r.add_theme_font_size_override("normal_font_size", 22)
+	r.add_theme_font_size_override("bold_font_size", 22)
+	v.add_child(r)
+	v.add_child(UI.button("Got it", close_modal, "PrimaryButton", 80))
+	modal(v)
 
 
 # ---------------------------------------------------------------- toasts & modals

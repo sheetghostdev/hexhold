@@ -48,7 +48,7 @@ func start(state: MatchState, local_player: int) -> void:
 	me = local_player
 	board.set_match(m, me)
 	var hq := m.hq_of(me)
-	board.look_at_tile(hq.idx if hq else m.center)
+	board.look_at_tile(hq.idx if hq else m.center, false, m.center)
 	hud.refresh_all()
 	hud.toast("Your turn! Destroy the enemy Home Base.", UI.ACCENT)
 
@@ -386,9 +386,41 @@ func _animate_events(evs: Array, move_from := Vector2.INF) -> void:
 				hud.toast("%s destroyed!" % DB.building(e["type"]).name, Color("#ff9b8f"))
 
 
+## Test-only commands (?debug): {"cheat": n} adds resources, or any
+## match command, e.g. {"type":"build","building":"factory","at":42}.
+func _debug_cmd(c) -> void:
+	if not c is Dictionary:
+		return
+	if c.has("cheat"):
+		m.players[me].alloy += int(c["cheat"])
+		m.players[me].fuel += int(c["cheat"])
+	elif c.has("build_any"):
+		# build on the n-th free hex of your territory
+		var n := int(c.get("n", 0))
+		for i in m.n_tiles():
+			if m.build_problem(me, c["build_any"], i) == "":
+				if n == 0:
+					_send({ "type": "build", "building": c["build_any"], "at": i })
+					break
+				n -= 1
+	else:
+		for k in c:
+			if c[k] is float:
+				c[k] = int(c[k])
+		_send(c)
+	board.refresh()
+	hud.refresh_all()
+
+
 ## Test hook (?debug in the URL): screen positions of tiles and units.
 func _process(_delta: float) -> void:
-	if not _debug or m == null or not Net._truthy(JavaScriptBridge.eval("!!window.__hexDebugReq", true)):
+	if not _debug or m == null:
+		return
+	var cmd = JavaScriptBridge.eval("window.__hexCmd || ''", true)
+	if cmd is String and cmd != "":
+		JavaScriptBridge.eval("window.__hexCmd = ''", true)
+		_debug_cmd(JSON.parse_string(cmd))
+	if not Net._truthy(JavaScriptBridge.eval("!!window.__hexDebugReq", true)):
 		return
 	JavaScriptBridge.eval("window.__hexDebugReq = false", true)
 	var vp := get_viewport().get_visible_rect().size

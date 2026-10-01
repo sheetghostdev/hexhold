@@ -74,6 +74,7 @@ var building_at := {}
 var _vis := {}
 var _terr := PackedInt32Array()
 var _terr_ok := false
+var _pow := {}
 
 
 # ---------------------------------------------------------------- geometry
@@ -139,6 +140,7 @@ func mirror(i: int) -> int:
 
 func dirty() -> void:
 	_vis.clear()
+	_pow.clear()
 	_terr_ok = false
 
 
@@ -236,16 +238,38 @@ func owner_of(i: int) -> int:
 
 # ---------------------------------------------------------------- power
 
-## {supply, demand} for a player: finished buildings only,
-## or also those still under construction (planned = true).
+## Power for a player: {supply, demand, off}. Finished buildings only.
+## Rule: when demand is higher than supply, the NEWEST buildings switch
+## off ("off" = {building id: true}) until the rest fits.
+## planned = true also counts buildings under construction (for previews).
 func power(p: int, planned := false) -> Dictionary:
+	if not planned and _pow.has(p):
+		return _pow[p]
 	var supply := 0
 	var demand := 0
+	var users: Array[Building] = []
 	for b in buildings:
 		if b.owner == p and (b.build_left == 0 or planned):
 			supply += b.def().power_supply
 			demand += b.def().power_use
-	return { "supply": supply, "demand": demand }
+			if b.def().power_use > 0:
+				users.append(b)
+	var off := {}
+	var load := demand
+	for k in range(users.size() - 1, -1, -1):  # buildings are kept oldest-first
+		if load <= supply:
+			break
+		off[users[k].id] = true
+		load -= users[k].def().power_use
+	var res := { "supply": supply, "demand": demand, "off": off }
+	if not planned:
+		_pow[p] = res
+	return res
+
+
+## Finished and supplied with power.
+func powered(b: Building) -> bool:
+	return b.build_left == 0 and not power(b.owner)["off"].has(b.id)
 
 
 # ---------------------------------------------------------------- vision
@@ -497,6 +521,8 @@ func train_problem(p: int, b: Building, unit_id: String) -> String:
 		return "Not your building"
 	if b.build_left > 0:
 		return "Still under construction"
+	if not powered(b):
+		return "No power: build a Power Plant"
 	if not b.def().trains.has(unit_id):
 		return "Can't train that here"
 	var d := DB.unit(unit_id)
@@ -628,7 +654,7 @@ func _start_turn(p: int) -> void:
 func _turrets_fire(p: int) -> void:
 	for b in player_buildings(p):
 		var d := b.def()
-		if d.attack <= 0.0 or b.build_left > 0:
+		if d.attack <= 0.0 or not powered(b):
 			continue
 		var target: UnitS = null
 		for j in in_range(b.idx, d.attack_range):

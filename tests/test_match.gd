@@ -17,6 +17,7 @@ func _init() -> void:
 	test_setup()
 	test_commands()
 	test_build()
+	test_power()
 	test_ai_games()
 	print("ALL MATCH TESTS PASSED" if failures == 0 else "%d MATCH FAILURES" % failures)
 	quit(1 if failures > 0 else 0)
@@ -137,6 +138,44 @@ func test_build() -> void:
 	for k in DB.building("drill").build_turns * 2:
 		m.apply(m.cur, { "type": "end_turn" })
 	check(b.build_left == 0, "construction finishes")
+
+
+func free_land(m: MatchState, p: int) -> Array[int]:
+	var out: Array[int] = []
+	var terr := m.territory()
+	for i in m.n_tiles():
+		if terr[i] == p and m.ground[i] == MatchState.Ground.LAND and m.obstacle[i] == 0 and m.building_on(i) == null and m.unit_on(i) == null:
+			out.append(i)
+	return out
+
+
+func test_power() -> void:
+	var m := new_match(11, false)
+	var spots := free_land(m, 0)
+	var pw := m.power(0)
+	check(pw["off"].is_empty(), "everything powered at start")
+	var fac := m.place_building("factory", spots[0], 0, true)
+	var tur := m.place_building("turret", spots[1], 0, true)
+	var brk2 := m.place_building("barracks", spots[2], 0, true)
+	pw = m.power(0)
+	# supply 9 (plant 6 + base 3); demand 2 + 3 + 2 + 2 = 9: still fits
+	check(pw["demand"] == 9 and pw["supply"] == 9 and pw["off"].is_empty(), "demand == supply fits: %s" % [pw])
+	var drl := m.place_building("drill", spots[3], 0, true)
+	pw = m.power(0)
+	check(pw["off"].size() == 1 and pw["off"].has(drl.id), "newest building switches off first")
+	check(m.powered(fac) and not m.powered(drl), "powered() follows the rule")
+	var plant: MatchState.Building = null
+	for b in m.player_buildings(0):
+		if b.type == "power_plant":
+			plant = b
+	m._destroy_building(plant, 1)
+	pw = m.power(0)
+	check(not m.powered(drl) and not m.powered(brk2) and not m.powered(tur), "losing a power plant switches newer buildings off")
+	check(pw["supply"] == 3, "home base still makes a little power")
+	check(m.train_problem(0, fac, "tank").begins_with("No power"), "unpowered factory can't train")
+	var unbuilt := m.place_building("power_plant", free_land(m, 0)[0], 0, false)
+	check(m.power(0, true)["supply"] == 9 and m.power(0)["supply"] == 3, "planned power counts construction")
+	check(unbuilt.build_left > 0, "power plant under construction")
 
 
 func test_ai_games() -> void:

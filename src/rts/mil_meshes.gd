@@ -18,6 +18,8 @@ const SKIN := Color("#f0c7a0")
 static func build(key: String) -> ArrayMesh:
 	if key.begins_with("mil_u_"):
 		return _unit(key.substr(6))
+	if key == "mil_alert":
+		return _alert()
 	var team := key.begins_with("mil_bt_")
 	var id := key.substr(4)
 	if team:
@@ -36,6 +38,21 @@ static func build(key: String) -> ArrayMesh:
 		"rocks": _rocks(b)
 		"scaffold": _scaffold(b)
 		_: push_error("Unknown military mesh " + key)
+	return b.commit()
+
+
+## "No power" marker: a yellow bolt on a red disc, facing the camera.
+static func _alert() -> ArrayMesh:
+	var b := LowPoly.Builder.new()
+	b.inside = Vector3(0, 0, -1000)
+	var red := Color("#d8262b")
+	var segs := 14
+	for k in segs:
+		var a0 := TAU * k / segs
+		var a1 := TAU * (k + 1) / segs
+		b.tri(Vector3(0, 0, -0.02), Vector3(cos(a0) * 0.62, sin(a0) * 0.62, -0.02), Vector3(cos(a1) * 0.62, sin(a1) * 0.62, -0.02), red)
+	b.quad(Vector3(-0.125, 0.45, 0), Vector3(0.175, 0.45, 0), Vector3(-0.025, -0.02, 0), Vector3(-0.3, -0.02, 0), YELLOW)
+	b.quad(Vector3(-0.06, 0.06, 0), Vector3(0.3, 0.06, 0), Vector3(0.06, -0.48, 0), Vector3(-0.06, -0.48, 0), YELLOW)
 	return b.commit()
 
 

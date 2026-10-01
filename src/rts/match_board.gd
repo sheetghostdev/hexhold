@@ -38,6 +38,7 @@ var mat_water: StandardMaterial3D
 var mat_overlay: StandardMaterial3D
 var mat_ghost: StandardMaterial3D
 var mat_preview: StandardMaterial3D
+var mat_alert: StandardMaterial3D
 var mat_blob: StandardMaterial3D
 var mat_cloud: StandardMaterial3D
 var team_mats := {}
@@ -88,6 +89,8 @@ func _materials() -> void:
 	mat_ghost = mat_overlay.duplicate()
 	mat_ghost.no_depth_test = false
 	mat_ghost.render_priority = 1
+	mat_alert = mat_overlay.duplicate()
+	mat_alert.render_priority = 3
 	mat_preview = mat_ghost.duplicate()
 	mat_preview.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
 	mat_blob = _vc(StandardMaterial3D.new())
@@ -237,6 +240,7 @@ func _flush(prefix: String) -> void:
 				"o": inst.material_override = mat_overlay
 				"g": inst.material_override = mat_ghost
 				"q": inst.material_override = mat_preview
+				"a": inst.material_override = mat_alert
 				"w": inst.material_override = mat_water
 				"b": inst.material_override = mat_blob
 				"c": inst.material_override = mat_cloud
@@ -299,6 +303,7 @@ func _build_static() -> void:
 		_tile(i, c, dim, terr)
 	_flush("s:")
 	_flush("g:")
+	_flush("a:")
 	_flush("w:")
 	_flush("b:")
 	_flush("c:")
@@ -347,6 +352,10 @@ func _tile(i: int, c: Vector3, dim: float, terr: PackedInt32Array) -> void:
 
 func _building(b: MatchState.Building, c: Vector3, dim: float) -> void:
 	var d := b.def()
+	var off := b.build_left == 0 and not m.powered(b) and (b.owner == viewer or seen(b.idx))
+	if off:
+		dim *= 0.6
+		_add("a:mil_alert", Transform3D(Basis().scaled(Vector3.ONE * 0.5), c + Vector3(0, 1.45, 0.1)))
 	var col := _tint(color_of(b.owner), dim)
 	var white := _tint(Color.WHITE, dim)
 	var yaw := 0.0
@@ -361,7 +370,9 @@ func _building(b: MatchState.Building, c: Vector3, dim: float) -> void:
 	var text := d.short
 	if b.build_left > 0:
 		text += "  %d" % b.build_left
-	var l := _label(c + Vector3(0, 0.05, 0.72), text, Color.WHITE, 34)
+	if off:
+		text += " OFF"
+	var l := _label(c + Vector3(0, 0.05, 0.72), text, Color("#ff9b8f") if off else Color.WHITE, 34)
 	l.outline_modulate = color_of(b.owner).darkened(0.5)
 	if b.hp < d.hp and b.build_left == 0:
 		var hl := _label(c + Vector3(0, 1.25, 0), "%d/%d" % [b.hp, d.hp], Color("#ffd7a8"), 30)
@@ -516,6 +527,7 @@ func _process(delta: float) -> void:
 		return
 	mat_overlay.albedo_color.a = 0.8 + 0.2 * sin(_time * 5.0)
 	mat_preview.albedo_color.a = 0.8 + 0.2 * sin(_time * 4.0)
+	mat_alert.albedo_color.a = 0.75 + 0.25 * sin(_time * 6.0)
 	if mmi.has("c:cloud"):
 		mmi["c:cloud"].position = Vector3(sin(_time * 0.3) * 0.05, sin(_time * 0.8) * 0.03, 0)
 	for u in unit_pos:
@@ -621,8 +633,10 @@ func zoom_at(screen: Vector2, factor: float) -> void:
 	_apply_camera()
 
 
-func look_at_tile(i: int, animate: bool = false) -> void:
+func look_at_tile(i: int, animate: bool = false, toward := -1) -> void:
 	var target := world(i)
+	if toward >= 0:
+		target = target.lerp(world(toward), 0.35)
 	target.y = 0.0
 	target.z += span * 0.15
 	var old := focus
