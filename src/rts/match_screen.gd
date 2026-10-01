@@ -17,6 +17,7 @@ var sel_building: MatchState.Building = null
 var sel_tile := -1
 var reach := {}
 var targets: Array[int] = []
+var clears: Array[int] = []
 var build_cat := ""        # open build-menu category on the selected hex
 var preview_type := ""     # building being previewed before confirming
 
@@ -129,6 +130,9 @@ func _tap(px: Vector2) -> void:
 		if targets.has(i):
 			do_attack(i)
 			return
+		if clears.has(i):
+			do_clear(i)
+			return
 		if reach.has(i):
 			do_move(sel_unit, i)
 			return
@@ -149,6 +153,12 @@ func _highlights() -> void:
 	board.preview_type = preview_type
 	board.reach = reach
 	board.targets = targets
+	board.clears = clears
+	var cinfo := {}
+	for c in clears:
+		var o := m.obstacle_def(c)
+		cinfo[c] = "+%d %s" % [m.amount[c], o.resource.capitalize()]
+	board.clear_info = cinfo
 	var info := {}
 	if sel_unit != null and m.units.has(sel_unit):
 		for t in targets:
@@ -168,10 +178,12 @@ func select_unit(u: MatchState.UnitS) -> void:
 	sel_tile = u.idx
 	reach = m.reachable(u) if (my_turn() and u.owner == me) else {}
 	targets = m.attack_targets(u) if (my_turn() and u.owner == me) else []
+	clears = m.clear_targets(u) if (my_turn() and u.owner == me) else []
 	_highlights()
 
 
 func select_building(b: MatchState.Building) -> void:
+	clears = []
 	build_cat = ""
 	preview_type = ""
 	Sfx.play("tap")
@@ -184,6 +196,7 @@ func select_building(b: MatchState.Building) -> void:
 
 
 func select_tile(i: int) -> void:
+	clears = []
 	if i != sel_tile:
 		build_cat = ""
 		preview_type = ""
@@ -196,6 +209,7 @@ func select_tile(i: int) -> void:
 
 
 func deselect() -> void:
+	clears = []
 	build_cat = ""
 	preview_type = ""
 	sel_unit = null
@@ -262,6 +276,20 @@ func do_attack(target: int) -> void:
 	_check_over()
 
 
+func do_clear(target: int) -> void:
+	var u := sel_unit
+	var res := _send({ "type": "clear", "unit": u.id, "target": target })
+	if not res["ok"]:
+		return
+	busy = true
+	clears = []
+	await _animate_events(res["events"])
+	busy = false
+	board.refresh()
+	hud.refresh_all()
+	select_unit(u)
+
+
 func do_train(b: MatchState.Building, unit_id: String) -> void:
 	var res := _send({ "type": "train", "building": b.id, "unit": unit_id })
 	if not res["ok"]:
@@ -323,6 +351,9 @@ func end_turn() -> void:
 	hud.refresh_all()
 	if _check_over():
 		return
+	# your own start-of-turn news: finished jobs, drill income, new buildings
+	var mine := enemy_events.filter(func(e): return e["p"] == me and e["type"] in ["cleared", "drill", "built"])
+	_animate_events(mine)
 	var seen := 0
 	for e in enemy_events:
 		if e["type"] in ["move", "attack", "spawn", "turret", "destroyed"] and _visible_event(e):
@@ -381,6 +412,35 @@ func _animate_events(evs: Array, move_from := Vector2.INF) -> void:
 					board.float_text(board.rest_pos(u.idx), "-%d" % e["ret"], Color("#ffb347"))
 				if e["kill"]:
 					Sfx.play("kill")
+			"clear":
+				var u := m.unit_by_id(e["unit"])
+				var to := m.center_px(e["target"])
+				Sfx.play("tap")
+				if u != null:
+					var from := board.rest_pos(u.idx)
+					var tw := create_tween()
+					tw.tween_method(func(p: Vector2): board.unit_pos[u] = p, from, from.lerp(to, 0.3), 0.1)
+					tw.tween_method(func(p: Vector2): board.unit_pos[u] = p, from.lerp(to, 0.3), from, 0.14)
+					await tw.finished
+					board.unit_pos.erase(u)
+				board.float_text(to, "Clearing", Color("#ffe08a"))
+			"cleared":
+				var to := m.center_px(e["target"])
+				board.burst(to, Color("#ffd23f"))
+				if e["amount"] > 0:
+					Sfx.play("coin")
+					board.float_text(to, "+%d %s" % [e["amount"], String(e["resource"]).capitalize()], Color("#ffd23f"), true)
+			"drill":
+				var parts := []
+				if e["alloy"] > 0:
+					parts.append("+%d Alloy" % e["alloy"])
+				if e["fuel"] > 0:
+					parts.append("+%d Fuel" % e["fuel"])
+				board.float_text(m.center_px(e["at"][0]), " ".join(parts), Color("#ffe08a"))
+			"build", "built":
+				board.burst(m.center_px(e["at"][0]), board.color_of(e["p"]))
+			"spawn":
+				board.burst(m.center_px(e["at"][0]), board.color_of(e["p"]))
 			"destroyed":
 				board.burst(m.center_px(e["at"][0]), Color("#ffb347"))
 				hud.toast("%s destroyed!" % DB.building(e["type"]).name, Color("#ff9b8f"))
@@ -433,10 +493,12 @@ func _process(_delta: float) -> void:
 	for u in m.units:
 		var tg: Array = []
 		var rc: Array = []
+		var cl: Array = []
 		if u.owner == m.cur:
+			cl.assign(m.clear_targets(u))
 			tg.assign(m.attack_targets(u))
 			rc.assign(m.reachable(u).keys())
-		us.append({ "type": u.type, "owner": u.owner, "idx": u.idx, "pos": tiles[str(u.idx)], "targets": tg, "reach": rc })
+		us.append({ "type": u.type, "owner": u.owner, "idx": u.idx, "pos": tiles[str(u.idx)], "targets": tg, "reach": rc, "clears": cl })
 	var land := []
 	var terr := m.territory()
 	for i in m.n_tiles():

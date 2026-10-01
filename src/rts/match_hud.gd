@@ -227,6 +227,7 @@ func _icon(kind: String, tag: String, col: Color) -> IconRect:
 
 func _unit_card(u: MatchState.UnitS) -> void:
 	var d := u.def()
+	var m := s.m
 	var stats := "%s · [color=#7bd389]%d/%d hp[/color] · move %d" % [_who(u.owner), u.hp, d.hp, d.move]
 	if d.attack > 0.0:
 		stats += " · range %d" % d.attack_range
@@ -235,14 +236,24 @@ func _unit_card(u: MatchState.UnitS) -> void:
 	if u.owner != s.me or not s.my_turn():
 		return
 	var status := ""
+	if u.task >= 0:
+		var o := m.obstacle_def(u.task)
+		status = "Clearing %s: done in [b]%d turn%s[/b], then [color=#ffd23f]+%d %s[/color]. Moving cancels the job." % [o.name.to_lower() if o else "it", u.task_left, "" if u.task_left == 1 else "s", m.amount[u.task], o.resource.capitalize() if o else ""]
+		card_box.add_child(_note(status))
+		return
 	if u.fresh:
 		status = "Just arrived: ready next turn."
-	elif u.attacked or (u.moved and s.targets.is_empty()):
+	elif u.attacked or (u.moved and s.targets.is_empty() and s.clears.is_empty()):
 		status = "Done for this turn."
+	elif u.moved and not s.clears.is_empty():
+		status = "Tap a [color=#ffd23f][b]yellow ring[/b][/color] to start clearing it."
 	elif u.moved:
 		status = "Tap a [b]red target[/b] to attack."
-	elif d.attack <= 0.0:
-		status = "Tap a [b]white dot[/b] to move. (Clearing trees and rocks arrives in milestone 4.)"
+	elif d.abilities.has("clear"):
+		status = "Tap a [b]white dot[/b] to move."
+		if not s.clears.is_empty():
+			status = "Tap a [color=#ffd23f][b]yellow ring[/b][/color] to clear trees or rocks for resources, or a [b]white dot[/b] to move."
+		status += " Engineers can also build on open ground next to them, even outside your territory."
 	else:
 		status = "Tap a [b]white dot[/b] to move" + (", or a [b]red target[/b] to attack." if not s.targets.is_empty() else ".")
 	card_box.add_child(_note(status))
@@ -296,11 +307,12 @@ func _tile_card(i: int) -> void:
 			txt += " Units can't walk through."
 		else:
 			txt += " Units inside get extra cover."
-		card_box.add_child(_note(txt + " [color=#9fb0bf](Coming in milestone 4.)[/color]"))
+		card_box.add_child(_note(txt + " A Drill next to it pulls 1 per turn instead."))
 		return
-	if owner != s.me:
+	var engineer_here := owner < 0 and m.builder_for(s.me, i) != null and s.my_turn()
+	if owner != s.me and not engineer_here:
 		_header(IconRect.make("terrain", 58, 1), "Open ground", where)
-		card_box.add_child(_note("You can only build inside your territory. Every building claims the hexes around it."))
+		card_box.add_child(_note("Build inside your territory, or next to one of your Engineers. Every building claims the hexes around it."))
 		return
 	if not s.my_turn():
 		_header(IconRect.make("terrain", 58, 1), "Open ground", where)
@@ -311,14 +323,15 @@ func _tile_card(i: int) -> void:
 	elif s.build_cat != "":
 		_build_options(i, s.build_cat)
 	else:
-		_build_categories()
+		_build_categories(i)
 
 
 const CATEGORIES := [["Power", "power_plant"], ["Production", "barracks"], ["Economy", "drill"], ["Defense", "turret"]]
 
 
-func _build_categories() -> void:
-	_header(IconRect.make("terrain", 58, 1), "Open ground", "Your territory · what do you want to build?")
+func _build_categories(i: int) -> void:
+	var where := "Your territory" if s.m.owner_of(i) == s.me else "Your Engineer can build here"
+	_header(IconRect.make("terrain", 58, 1), "Open ground", where + " · what do you want to build?")
 	var grid := GridContainer.new()
 	grid.columns = 2
 	grid.add_theme_constant_override("h_separation", 10)

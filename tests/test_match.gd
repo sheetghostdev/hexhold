@@ -18,6 +18,7 @@ func _init() -> void:
 	test_commands()
 	test_build()
 	test_power()
+	test_gather()
 	test_ai_games()
 	print("ALL MATCH TESTS PASSED" if failures == 0 else "%d MATCH FAILURES" % failures)
 	quit(1 if failures > 0 else 0)
@@ -176,6 +177,88 @@ func test_power() -> void:
 	var unbuilt := m.place_building("power_plant", free_land(m, 0)[0], 0, false)
 	check(m.power(0, true)["supply"] == 9 and m.power(0)["supply"] == 3, "planned power counts construction")
 	check(unbuilt.build_left > 0, "power plant under construction")
+
+
+func test_gather() -> void:
+	var m := new_match(13, false)
+	var eng: MatchState.UnitS = null
+	for u in m.player_units(0):
+		if u.type == "engineer":
+			eng = u
+	# put a rock next to the engineer
+	var rock := -1
+	for j in m.neighbors(eng.idx):
+		if m.ground[j] == MatchState.Ground.LAND and m.unit_on(j) == null and m.building_on(j) == null:
+			rock = j
+			break
+	m.obstacle[rock] = DB.obstacle_index("rocks")
+	m.amount[rock] = DB.obstacles["rocks"].amount
+	check(m.clear_targets(eng).has(rock), "engineer can clear the rock next to it")
+	check(m.build_problem(0, "drill", rock).begins_with("Clear the"), "can't build on rocks")
+	var alloy := m.players[0].alloy
+	var res := m.apply(0, { "type": "clear", "unit": eng.id, "target": rock })
+	check(res["ok"], "clear command: " + res["error"])
+	check(eng.task == rock and m.clear_targets(eng).is_empty(), "engineer is busy clearing")
+	var turns: int = DB.obstacles["rocks"].clear_turns
+	for k in turns:
+		check(m.obstacle[rock] != 0, "rock still there before the job is done")
+		m.apply(0, { "type": "end_turn" })
+		m.apply(1, { "type": "end_turn" })
+	check(m.obstacle[rock] == 0, "rock cleared after %d turns" % turns)
+	var income: int = DB.rules.hq_income_alloy * turns
+	check(m.players[0].alloy == alloy + income + DB.obstacles["rocks"].amount, "clearing pays out the alloy")
+	check(m.events.any(func(e): return e["type"] == "cleared"), "cleared event")
+	# moving cancels a job
+	var tree := -1
+	for j in m.neighbors(eng.idx):
+		if m.ground[j] == MatchState.Ground.LAND and m.unit_on(j) == null and m.building_on(j) == null and j != rock:
+			tree = j
+			break
+	m.obstacle[tree] = DB.obstacle_index("trees")
+	m.amount[tree] = 6
+	check(m.apply(0, { "type": "clear", "unit": eng.id, "target": tree })["ok"], "start clearing trees")
+	m.apply(0, { "type": "end_turn" })
+	m.apply(1, { "type": "end_turn" })
+	var reach := m.reachable(eng)
+	check(not reach.is_empty(), "busy engineer may still move away")
+	m.apply(0, { "type": "move", "unit": eng.id, "to": reach.keys()[0] })
+	check(eng.task == -1, "moving cancels clearing")
+	# drill pulls 1 per neighbouring obstacle per turn
+	m.apply(0, { "type": "end_turn" })
+	var spot := -1
+	for i in free_land(m, 1):
+		var n := 0
+		for j in m.neighbors(i):
+			if m.obstacle[j] != 0:
+				n += 1
+		if n > 0:
+			spot = i
+			break
+	if spot >= 0:
+		var drl := m.place_building("drill", spot, 1, true)
+		var before := 0
+		for j in m.neighbors(spot):
+			before += m.amount[j]
+		m.apply(1, { "type": "end_turn" })
+		m.apply(0, { "type": "end_turn" })
+		var after := 0
+		for j in m.neighbors(spot):
+			after += m.amount[j]
+		check(after < before, "drill drains neighbouring obstacles (%d -> %d)" % [before, after])
+		check(m.events.any(func(e): return e["type"] == "drill" and e["building"] == drl.id), "drill event")
+	else:
+		check(false, "no drill spot found")
+	# engineers build outside territory
+	if m.cur == 1:
+		m.apply(1, { "type": "end_turn" })
+	var out := -1
+	for j in m.neighbors(eng.idx):
+		if m.owner_of(j) == -1 and m.ground[j] == MatchState.Ground.LAND and m.obstacle[j] == 0 and m.building_on(j) == null and m.unit_on(j) == null:
+			out = j
+	if out >= 0:
+		m.players[0].alloy += 20
+		var br := m.apply(0, { "type": "build", "building": "wall", "at": out })
+		check(br["ok"], "engineer builds outside territory: " + br["error"])
 
 
 func test_ai_games() -> void:

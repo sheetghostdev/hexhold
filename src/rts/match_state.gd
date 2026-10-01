@@ -42,6 +42,8 @@ class UnitS:
 	var attacked := false
 	var fresh := false
 	var kills := 0
+	var task := -1        # hex an Engineer is clearing (-1 = none)
+	var task_left := 0    # turns until the clearing is done
 
 	func def() -> UnitDef:
 		return DB.unit(type)
@@ -452,6 +454,8 @@ func apply(p: int, cmd: Dictionary) -> Dictionary:
 			err = _cmd_train(p, cmd)
 		"build":
 			err = _cmd_build(p, cmd)
+		"clear":
+			err = _cmd_clear(p, cmd)
 		"end_turn":
 			err = _cmd_end_turn(p)
 		_:
@@ -474,6 +478,7 @@ func _cmd_move(p: int, cmd: Dictionary) -> String:
 	if not reach.has(to):
 		return "Can't move there"
 	var path := path_to(reach, u.idx, to)
+	u.task = -1
 	unit_at.erase(u.idx)
 	u.idx = to
 	unit_at[to] = u
@@ -574,8 +579,12 @@ func build_problem(p: int, type: String, i: int) -> String:
 		return "Can't build that"
 	if i < 0 or i >= n_tiles() or ground[i] != Ground.LAND:
 		return "Not buildable land"
-	if owner_of(i) != p:
-		return "Outside your territory"
+	var t := owner_of(i)
+	if t != p:
+		if t >= 0:
+			return "Inside enemy territory"
+		if builder_for(p, i) == null:
+			return "Outside your territory"
 	if obstacle[i] != 0:
 		return "Clear the %s first" % obstacle_def(i).name.to_lower()
 	if building_on(i) != null:
@@ -583,6 +592,48 @@ func build_problem(p: int, type: String, i: int) -> String:
 	if unit_on(i) != null:
 		return "A unit is standing here"
 	return cost_problem(p, d.cost_alloy, d.cost_fuel)
+
+
+## An Engineer next to hex i that can still act this turn (builds outside territory).
+func builder_for(p: int, i: int) -> UnitS:
+	for j in neighbors(i):
+		var u := unit_on(j)
+		if u != null and u.owner == p and u.def().abilities.has("build") and not u.attacked and not u.fresh:
+			return u
+	return null
+
+
+## Obstacle hexes this Engineer can start clearing right now.
+func clear_targets(u: UnitS) -> Array[int]:
+	var out: Array[int] = []
+	if not u.def().abilities.has("clear") or u.attacked or u.fresh or u.task >= 0:
+		return out
+	for j in in_range(u.idx, 1):
+		if obstacle[j] != 0 and amount[j] > 0 and not _being_cleared(j):
+			out.append(j)
+	return out
+
+
+func _being_cleared(i: int) -> bool:
+	for u in units:
+		if u.task == i:
+			return true
+	return false
+
+
+func _cmd_clear(p: int, cmd: Dictionary) -> String:
+	var u := unit_by_id(cmd.get("unit", -1))
+	if u == null or u.owner != p:
+		return "No such unit"
+	var t: int = cmd.get("target", -1)
+	if not clear_targets(u).has(t):
+		return "Can't clear that"
+	u.task = t
+	u.task_left = obstacle_def(t).clear_turns
+	u.moved = true
+	u.attacked = true
+	_event(p, "clear", [u.idx, t], { "unit": u.id, "target": t, "turns": u.task_left })
+	return ""
 
 
 func cost_problem(p: int, alloy: int, fuel: int) -> String:
@@ -601,6 +652,11 @@ func _cmd_build(p: int, cmd: Dictionary) -> String:
 	if err != "":
 		return err
 	var d := DB.building(type)
+	if owner_of(i) != p:
+		var eng := builder_for(p, i)
+		eng.moved = true
+		eng.attacked = true
+		eng.task = -1
 	players[p].alloy -= d.cost_alloy
 	players[p].fuel -= d.cost_fuel
 	var b := place_building(type, i, p, false)
@@ -641,6 +697,7 @@ func _start_turn(p: int) -> void:
 			b.build_left -= 1
 			if b.build_left == 0:
 				_event(p, "built", [b.idx], { "building": b.id, "type": b.type })
+	_work(p)
 	for u in player_units(p):
 		if not u.moved and not u.attacked and not u.fresh:
 			u.hp = mini(u.def().hp, u.hp + (3 if owner_of(u.idx) == p else 1))
@@ -649,6 +706,58 @@ func _start_turn(p: int) -> void:
 		u.fresh = false
 	dirty()
 	update_explored(p)
+
+
+## Start-of-turn gathering: Engineers progress their clearing, Drills pull
+## 1 from every neighbouring obstacle. Emptied obstacles become open land.
+func _work(p: int) -> void:
+	for u in player_units(p):
+		if u.task < 0:
+			continue
+		u.task_left -= 1
+		if u.task_left > 0:
+			continue
+		var i := u.task
+		u.task = -1
+		var o := obstacle_def(i)
+		var got := 0
+		var res := ""
+		if o != null:
+			got = amount[i]
+			res = o.resource
+			_gain(p, res, got)
+			_remove_obstacle(i)
+		_event(p, "cleared", [u.idx, i], { "unit": u.id, "target": i, "resource": res, "amount": got })
+	for b in player_buildings(p):
+		if b.type != "drill" or not powered(b):
+			continue
+		var gain := { "alloy": 0, "fuel": 0 }
+		var touched: Array = [b.idx]
+		for j in neighbors(b.idx):
+			var o := obstacle_def(j)
+			if o == null or amount[j] == 0:
+				continue
+			amount[j] -= 1
+			gain[o.resource] += 1
+			_gain(p, o.resource, 1)
+			if amount[j] == 0:
+				_remove_obstacle(j)
+				touched.append(j)
+		if gain["alloy"] + gain["fuel"] > 0:
+			_event(p, "drill", touched, { "building": b.id, "alloy": gain["alloy"], "fuel": gain["fuel"] })
+
+
+func _gain(p: int, res: String, n: int) -> void:
+	if res == "alloy":
+		players[p].alloy += n
+	elif res == "fuel":
+		players[p].fuel += n
+
+
+func _remove_obstacle(i: int) -> void:
+	obstacle[i] = 0
+	amount[i] = 0
+	dirty()
 
 
 func _turrets_fire(p: int) -> void:

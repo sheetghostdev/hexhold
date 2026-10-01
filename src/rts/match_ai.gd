@@ -21,6 +21,9 @@ static func play_turn(m: MatchState) -> void:
 			m.apply(p, { "type": "move", "unit": u.id, "to": dest })
 			if m.units.has(u):
 				_attack(m, p, u)
+	for u in m.player_units(p):
+		if m.units.has(u) and u.def().abilities.has("clear"):
+			_engineer(m, p, u)
 	_build(m, p)
 	_train(m, p)
 
@@ -131,3 +134,53 @@ static func _bcount(m: MatchState, p: int, type: String) -> int:
 		if b.type == type:
 			n += 1
 	return n
+
+
+## Engineers clear the nearest trees/rocks near home, favouring whichever
+## resource is lower.
+static func _engineer(m: MatchState, p: int, u: MatchState.UnitS) -> void:
+	if u.task >= 0 or u.fresh:
+		return
+	var want := "alloy" if m.players[p].alloy <= m.players[p].fuel else "fuel"
+	if _clear_best(m, p, u, want):
+		return
+	var hq := m.hq_of(p)
+	if hq == null:
+		return
+	var goal := -1
+	var goal_d := 999
+	for i in m.n_tiles():
+		var o := m.obstacle_def(i)
+		if o == null or m.amount[i] == 0 or m.dist(i, hq.idx) > 4 or m._being_cleared(i):
+			continue
+		var d := m.dist(i, u.idx) + (0 if o.resource == want else 2)
+		if d < goal_d:
+			goal_d = d
+			goal = i
+	if goal < 0:
+		return
+	var reach := m.reachable(u)
+	var best := -1
+	var best_d := m.dist(u.idx, goal)
+	for t in reach:
+		var d := m.dist(t, goal)
+		if d < best_d:
+			best_d = d
+			best = t
+	if best >= 0:
+		m.apply(p, { "type": "move", "unit": u.id, "to": best })
+		_clear_best(m, p, u, want)
+
+
+static func _clear_best(m: MatchState, p: int, u: MatchState.UnitS, want: String) -> bool:
+	var best := -1
+	var best_s := -INF
+	for t in m.clear_targets(u):
+		var o := m.obstacle_def(t)
+		var s: float = m.amount[t] + (4.0 if o.resource == want else 0.0)
+		if s > best_s:
+			best_s = s
+			best = t
+	if best < 0:
+		return false
+	return m.apply(p, { "type": "clear", "unit": u.id, "target": best })["ok"]

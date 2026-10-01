@@ -110,8 +110,13 @@ var match_screen: MatchScreen
 func _on_start_match() -> void:
 	_clear()
 	_hide_backdrop()
-	var m := MatchGen.create({ "players": [
-		{ "name": "You", "color": 0 }, { "name": "Enemy AI", "color": 1, "ai": true }] })
+	var setup := { "players": [
+		{ "name": "You", "color": 0 }, { "name": "Enemy AI", "color": 1, "ai": true }] }
+	if Net.is_web():
+		var sd = JavaScriptBridge.eval("new URLSearchParams(location.search).get('seed') || ''", true)
+		if sd is String and sd.is_valid_int():
+			setup["seed"] = sd.to_int()
+	var m := MatchGen.create(setup)
 	match_screen = MatchScreen.new()
 	add_child(match_screen)
 	match_screen.quit_to_menu.connect(show_menu)

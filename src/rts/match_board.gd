@@ -22,6 +22,8 @@ var selected := -1
 var reach := {}
 var targets: Array[int] = []
 var target_info := {}
+var clears: Array[int] = []
+var clear_info := {}
 var preview_idx := -1
 var preview_type := ""
 
@@ -301,6 +303,11 @@ func _build_static() -> void:
 			continue
 		var dim := 1.0 if seen(i) else 0.62
 		_tile(i, c, dim, terr)
+	# clearing jobs in progress
+	for u in m.units:
+		if u.task >= 0 and (u.owner == viewer or seen(u.task)):
+			var jl := _label(world(u.task) + Vector3(0, 1.15, 0), "CLEARING %d" % u.task_left, Color("#ffe08a"), 30)
+			jl.outline_modulate = Color("#5a4300")
 	_flush("s:")
 	_flush("g:")
 	_flush("a:")
@@ -435,6 +442,23 @@ func _build_overlay() -> void:
 			if terr[j] != viewer and m.ground[j] == MatchState.Ground.LAND:
 				var tc := color_of(viewer).lightened(0.2)
 				_add("o:hexfill", _xf(world(j) + Vector3(0, lift, 0)), Color(tc.r, tc.g, tc.b, 0.45))
+	for i in clears:
+		_add("o:ring", _xf(world(i) + Vector3(0, lift, 0), 0.0, 0.95), Color("#ffd23f"))
+		if clear_info.has(i):
+			var cl := Label3D.new()
+			cl.text = clear_info[i]
+			cl.font = font
+			cl.font_size = 46
+			cl.pixel_size = 0.006
+			cl.outline_size = 16
+			cl.modulate = Color("#ffe9a0")
+			cl.outline_modulate = Color("#5a4300")
+			cl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+			cl.no_depth_test = true
+			cl.render_priority = 6
+			cl.outline_render_priority = 5
+			cl.position = world(i) + Vector3(0.05, 1.4, 0)
+			preview_root.add_child(cl)
 	if selected >= 0:
 		_add("o:hexline", _xf(world(selected) + Vector3(0, lift, 0)), Color(1, 1, 1, 0.95))
 	_flush("o:")
@@ -516,9 +540,9 @@ func _update_units() -> void:
 
 
 func _spent(u: MatchState.UnitS) -> bool:
-	if u.fresh or u.attacked:
+	if u.fresh or u.attacked or u.task >= 0:
 		return true
-	return u.moved and m.attack_targets(u).is_empty()
+	return u.moved and m.attack_targets(u).is_empty() and m.clear_targets(u).is_empty()
 
 
 func _process(delta: float) -> void:
@@ -540,7 +564,7 @@ func _process(delta: float) -> void:
 		n.visible = true
 	for u in unit_nodes:
 		var body: Node3D = unit_nodes[u].get_node("Body")
-		var ready: bool = u.owner == m.cur and u.owner == viewer and not u.moved and not u.fresh and not u.attacked
+		var ready: bool = u.owner == m.cur and u.owner == viewer and not u.moved and not u.fresh and not u.attacked and u.task < 0
 		body.position.y = absf(sin(_time * 3.0 + u.id)) * 0.05 if ready else 0.0
 
 
