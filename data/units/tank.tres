@@ -1,0 +1,21 @@
+[gd_resource type="Resource" script_class="UnitDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://src/rts/defs/unit_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = "tank"
+name = "Tank"
+role = "Heavy armour. Slow, tough, wrecks buildings."
+hp = 24
+attack = 4.5
+defense = 3.5
+move = 1
+attack_range = 1
+vision = 2
+cost_alloy = 8
+cost_fuel = 5
+train_turns = 1
+vs_buildings = 2.0
+abilities = Array[String]([])
+sort = 3

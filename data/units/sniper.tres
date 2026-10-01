@@ -1,0 +1,21 @@
+[gd_resource type="Resource" script_class="UnitDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://src/rts/defs/unit_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = "sniper"
+name = "Sniper"
+role = "Hits from 3 hexes away and sees far. Fragile up close."
+hp = 6
+attack = 3.0
+defense = 0.5
+move = 2
+attack_range = 3
+vision = 3
+cost_alloy = 4
+cost_fuel = 2
+train_turns = 1
+vs_buildings = 0.5
+abilities = Array[String]([])
+sort = 2

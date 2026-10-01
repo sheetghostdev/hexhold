@@ -1,0 +1,13 @@
+[gd_resource type="Resource" script_class="ObstacleDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://src/rts/defs/obstacle_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = "rocks"
+name = "Rocks"
+resource = "alloy"
+amount = 8
+clear_turns = 3
+blocks_move = true
+defense_bonus = 1.0

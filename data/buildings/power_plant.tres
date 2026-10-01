@@ -1,0 +1,20 @@
+[gd_resource type="Resource" script_class="BuildingDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://src/rts/defs/building_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = "power_plant"
+name = "Power Plant"
+short = "PWR"
+category = "Power"
+description = "Produces 6 power for your other buildings. A juicy target."
+hp = 15
+cost_alloy = 6
+cost_fuel = 2
+build_turns = 2
+power_supply = 6
+power_use = 0
+territory = 1
+vision = 2
+sort = 1

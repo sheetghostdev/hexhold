@@ -1,0 +1,21 @@
+[gd_resource type="Resource" script_class="UnitDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://src/rts/defs/unit_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = "engineer"
+name = "Engineer"
+role = "Clears trees and rocks for resources. Can't fight."
+hp = 8
+attack = 0.0
+defense = 1.0
+move = 2
+attack_range = 0
+vision = 2
+cost_alloy = 3
+cost_fuel = 1
+train_turns = 1
+vs_buildings = 0.0
+abilities = Array[String](["build", "clear"])
+sort = 0

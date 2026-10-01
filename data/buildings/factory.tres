@@ -1,0 +1,21 @@
+[gd_resource type="Resource" script_class="BuildingDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://src/rts/defs/building_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = "factory"
+name = "Factory"
+short = "FAC"
+category = "Production"
+description = "Builds tanks."
+hp = 25
+cost_alloy = 8
+cost_fuel = 4
+build_turns = 3
+power_supply = 0
+power_use = 3
+territory = 1
+vision = 2
+trains = Array[String](["tank"])
+sort = 3

@@ -1,0 +1,21 @@
+[gd_resource type="Resource" script_class="UnitDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://src/rts/defs/unit_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = "rifleman"
+name = "Rifleman"
+role = "Basic infantry. Cheap, holds ground."
+hp = 10
+attack = 2.0
+defense = 2.0
+move = 2
+attack_range = 1
+vision = 2
+cost_alloy = 4
+cost_fuel = 0
+train_turns = 1
+vs_buildings = 1.0
+abilities = Array[String]([])
+sort = 1

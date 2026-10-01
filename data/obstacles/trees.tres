@@ -1,0 +1,13 @@
+[gd_resource type="Resource" script_class="ObstacleDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://src/rts/defs/obstacle_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = "trees"
+name = "Trees"
+resource = "fuel"
+amount = 6
+clear_turns = 2
+blocks_move = false
+defense_bonus = 1.5

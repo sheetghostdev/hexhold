@@ -1,0 +1,22 @@
+[gd_resource type="Resource" script_class="BuildingDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://src/rts/defs/building_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = "hq"
+name = "Home Base"
+short = "HQ"
+category = "HQ"
+description = "Your headquarters. Lose it and you lose the match. Trains engineers."
+hp = 40
+cost_alloy = 0
+cost_fuel = 0
+build_turns = 0
+power_supply = 3
+power_use = 0
+territory = 2
+vision = 3
+trains = Array[String](["engineer"])
+buildable = false
+sort = 0

@@ -45,6 +45,9 @@ func _on_hash_change(_args: Array) -> void:
 
 
 func _clear() -> void:
+	if match_screen:
+		match_screen.queue_free()
+		match_screen = null
 	if menu:
 		menu.queue_free()
 		menu = null
@@ -62,6 +65,7 @@ func show_menu() -> void:
 	menu = Menu.new()
 	add_child(menu)
 	menu.start_game.connect(_on_start_game)
+	menu.start_match.connect(_on_start_match)
 	menu.open_entry.connect(_on_open_entry)
 	menu.open_code.connect(open_code)
 
@@ -97,6 +101,21 @@ func _show_game() -> GameScreen:
 	add_child(game)
 	game.quit_to_menu.connect(show_menu)
 	return game
+
+
+var match_screen: MatchScreen
+
+
+## The new military game: you against the computer.
+func _on_start_match() -> void:
+	_clear()
+	_hide_backdrop()
+	var m := MatchGen.create({ "players": [
+		{ "name": "You", "color": 0 }, { "name": "Enemy AI", "color": 1, "ai": true }] })
+	match_screen = MatchScreen.new()
+	add_child(match_screen)
+	match_screen.quit_to_menu.connect(show_menu)
+	match_screen.start(m, 0)
 
 
 func _on_start_game(gs: GameState, local: int) -> void:

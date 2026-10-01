@@ -153,7 +153,9 @@ static func get_mesh(key: String) -> ArrayMesh:
 		return _cache[key]
 	var b := Builder.new()
 	var m: ArrayMesh
-	if key.begins_with("unit_"):
+	if key.begins_with("mil_"):
+		m = MilMeshes.build(key)
+	elif key.begins_with("unit_"):
 		m = _unit(int(key.substr(5)))
 	else:
 		match key:

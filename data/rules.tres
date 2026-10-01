@@ -1,0 +1,19 @@
+[gd_resource type="Resource" script_class="RulesDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://src/rts/defs/rules_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+map_radius = 5
+start_alloy = 10
+start_fuel = 10
+hq_income_alloy = 2
+hq_income_fuel = 1
+turn_seconds = 60
+turn_limit = 12
+unit_cap = 8
+trees_share = 0.16
+rocks_share = 0.12
+water_share = 0.05
+start_units = Array[String](["engineer", "rifleman"])
+start_buildings = Array[String](["power_plant", "barracks"])

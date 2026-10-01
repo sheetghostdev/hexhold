@@ -5,6 +5,7 @@ extends Control
 var kind := "gold"  # "gold" | "wood" | "stone" | "food" | "unit" | "building" | "star" | "castle" | "army"
 var id := 0
 var color := Color.WHITE
+var tag := ""  # string id for military units/buildings
 
 
 static func make(k: String, size_px: float, i: int = 0, c: Color = Color.WHITE) -> IconRect:
@@ -60,6 +61,16 @@ func _draw() -> void:
 		"town":
 			Icons.house(self, c + Vector2(-r * 0.35, -r * 0.05), r * 0.6, Color("#efe6d2"), color)
 			Icons.house(self, c + Vector2(r * 0.4, r * 0.1), r * 0.5, Color("#efe6d2"), color.darkened(0.15))
+		"alloy":
+			MilIcons.alloy(self, c, r)
+		"fuel":
+			MilIcons.fuel(self, c, r)
+		"power":
+			MilIcons.power(self, c, r)
+		"mil_unit":
+			MilIcons.unit(self, tag, c, r, color)
+		"mil_building":
+			MilIcons.building(self, tag, c, r, color)
 		"terrain":
 			var cols := [Color("#3f8fc9"), Color("#8cc265"), Color("#5f9e4a"), Color("#a9b55e"), Color("#8f8a83")]
 			draw_colored_polygon(Hex.corners(c, r * 1.1), cols[clampi(id, 0, 4)])

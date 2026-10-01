@@ -1,0 +1,21 @@
+[gd_resource type="Resource" script_class="BuildingDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://src/rts/defs/building_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = "barracks"
+name = "Barracks"
+short = "BRK"
+category = "Production"
+description = "Trains riflemen and snipers."
+hp = 20
+cost_alloy = 6
+cost_fuel = 0
+build_turns = 2
+power_supply = 0
+power_use = 2
+territory = 1
+vision = 2
+trains = Array[String](["rifleman", "sniper"])
+sort = 2

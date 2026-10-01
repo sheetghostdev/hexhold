@@ -1,0 +1,20 @@
+[gd_resource type="Resource" script_class="BuildingDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://src/rts/defs/building_def.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = "drill"
+name = "Drill"
+short = "DRL"
+category = "Economy"
+description = "Each turn pulls 1 resource from every tree or rock hex next to it, until they run dry."
+hp = 12
+cost_alloy = 4
+cost_fuel = 2
+build_turns = 2
+power_supply = 0
+power_use = 1
+territory = 1
+vision = 1
+sort = 4
