@@ -14,6 +14,8 @@ var card_wrap: MarginContainer
 var card_box: VBoxContainer
 var bottom_box: HBoxContainer
 var toasts: VBoxContainer
+var replay_box: PanelContainer
+var replay_fast_btn: Button
 var alert_box: PanelContainer
 var alert_label: RichTextLabel
 var _last_off := {}
@@ -35,6 +37,23 @@ func setup(screen: MatchScreen) -> void:
 	root.add_child(col)
 
 	col.add_child(_top_bar())
+	replay_box = PanelContainer.new()
+	replay_box.add_theme_stylebox_override("panel", UI._box(Color("#1d2a38"), 0, 8))
+	var rr := UI.hbox(10)
+	var rl := UI.label("Enemy turn replay")
+	rl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	rl.add_theme_font_size_override("font_size", 22)
+	rl.add_theme_color_override("font_color", Color("#ff9b8f"))
+	rr.add_child(rl)
+	replay_fast_btn = UI.button("2x", func(): s.toggle_replay_speed(), "GhostButton", 60)
+	replay_fast_btn.custom_minimum_size.x = 90
+	rr.add_child(replay_fast_btn)
+	var sk := UI.button("Skip", func(): s.skip_replay(), "", 60)
+	sk.custom_minimum_size.x = 120
+	rr.add_child(sk)
+	replay_box.add_child(rr)
+	replay_box.visible = false
+	col.add_child(replay_box)
 	alert_box = PanelContainer.new()
 	alert_box.add_theme_stylebox_override("panel", UI._box(Color("#7a1c1c"), 0, 10))
 	alert_label = UI.rich("")
@@ -161,7 +180,7 @@ func _refresh_bottom() -> void:
 	end.custom_minimum_size.x = 300
 	end.add_theme_font_size_override("font_size", 30)
 	end.disabled = not s.my_turn()
-	if m.cur != s.me and m.winner < 0:
+	if (m.cur != s.me or s.busy) and m.winner < 0:
 		end.text = "Enemy turn..."
 	bottom_box.add_child(end)
 
@@ -499,6 +518,11 @@ func _row(kind: String, tag: String, col: Color, title: String, effect: String, 
 	return b
 
 
+func show_replay(on: bool) -> void:
+	replay_box.visible = on
+	replay_fast_btn.text = "1x" if s.replay_fast else "2x"
+
+
 func _on_power_input(e: InputEvent) -> void:
 	if (e is InputEventMouseButton or e is InputEventScreenTouch) and not e.pressed:
 		_show_power()
@@ -584,13 +608,12 @@ func show_game_over() -> void:
 	var m := s.m
 	var v := UI.vbox(16)
 	var won := m.winner == s.me
-	var last: Dictionary = m.events[m.events.size() - 1]
-	var why := "Enemy Home Base destroyed." if last.get("reason", "") == "hq" else "Turn limit reached: highest score wins."
-	if not won and last.get("reason", "") == "hq":
+	var why := "Enemy Home Base destroyed." if m.win_reason == "hq" else "Turn limit reached: highest score wins."
+	if not won and m.win_reason == "hq":
 		why = "Your Home Base was destroyed."
 	_title(v, "Victory!" if won else "Defeat", why, UI.ACCENT if won else UI.BAD)
-	for p in m.players.size():
-		v.add_child(UI.label("%s: %d points" % [m.players[p].name, m.score(p)], "", true))
+	for p in mini(m.players.size(), m.final_scores.size()):
+		v.add_child(UI.label("%s: %d points" % [m.players[p].name, int(m.final_scores[p])], "", true))
 	v.add_child(UI.button("Back to menu", func(): s.quit_to_menu.emit(), "PrimaryButton", 84))
 	v.add_child(UI.button("Look at the map", close_modal, "GhostButton", 70))
 	modal(v)

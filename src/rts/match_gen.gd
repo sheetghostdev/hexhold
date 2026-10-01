@@ -28,6 +28,7 @@ static func create(setup: Dictionary) -> MatchState:
 		m.players.append(pl)
 	_terrain(m, rng)
 	_bases(m)
+	m.look_seed = rng.randi() % 1000000
 	m.rebuild_caches()
 	for p in m.players.size():
 		m.update_explored(p)

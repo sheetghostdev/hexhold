@@ -266,7 +266,7 @@ static func _xf(pos: Vector3, yaw: float = 0.0, s: float = 1.0) -> Transform3D:
 
 
 func _rand(i: int, k: int) -> float:
-	return float(GameState.mix(m.map_seed, i, k) % 10000) / 10000.0
+	return float(GameState.mix(m.look_seed, i, k) % 10000) / 10000.0
 
 
 static func _yaw_to(d: Vector3) -> float:

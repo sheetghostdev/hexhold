@@ -44,9 +44,10 @@ func _ready() -> void:
 
 
 func start(state: MatchState, local_player: int) -> void:
-	m = state
-	host = MatchHost.new(m)
+	host = MatchHost.new(state)
 	me = local_player
+	m = MatchState.new()
+	m.load_view(host.sync(me)["view"])
 	board.set_match(m, me)
 	var hq := m.hq_of(me)
 	board.look_at_tile(hq.idx if hq else m.center, false, m.center)
@@ -233,6 +234,7 @@ func reselect() -> void:
 
 # ---------------------------------------------------------------- actions
 
+## Sends a command to the host and plays back what came of it.
 func _send(cmd: Dictionary) -> Dictionary:
 	var res := host.submit(me, cmd)
 	if not res["ok"]:
@@ -241,22 +243,32 @@ func _send(cmd: Dictionary) -> Dictionary:
 	return res
 
 
-func do_move(u: MatchState.UnitS, to: int) -> void:
-	var start_px := board.rest_pos(u.idx)
-	var res := _send({ "type": "move", "unit": u.id, "to": to })
-	if not res["ok"]:
-		return
+## Plays the events the host sent, then adopts the host's view.
+func _play(res: Dictionary) -> void:
 	busy = true
 	reach = {}
 	targets = []
+	clears = []
 	board.reach = {}
 	board.targets = []
+	board.clears = []
 	board.refresh_overlay()
-	await _animate_events(res["events"], start_px)
+	await _animate_events(res["events"])
+	m.load_view(res["view"])
 	busy = false
 	board.refresh()
 	hud.refresh_all()
-	select_unit(u)
+
+
+func do_move(u: MatchState.UnitS, to: int) -> void:
+	var res := _send({ "type": "move", "unit": u.id, "to": to })
+	if not res["ok"]:
+		return
+	await _play(res)
+	if m.units.has(u):
+		select_unit(u)
+	else:
+		deselect()
 
 
 func do_attack(target: int) -> void:
@@ -264,11 +276,7 @@ func do_attack(target: int) -> void:
 	var res := _send({ "type": "attack", "unit": u.id, "target": target })
 	if not res["ok"]:
 		return
-	busy = true
-	await _animate_events(res["events"])
-	busy = false
-	board.refresh()
-	hud.refresh_all()
+	await _play(res)
 	if m.units.has(u):
 		select_unit(u)
 	else:
@@ -281,12 +289,7 @@ func do_clear(target: int) -> void:
 	var res := _send({ "type": "clear", "unit": u.id, "target": target })
 	if not res["ok"]:
 		return
-	busy = true
-	clears = []
-	await _animate_events(res["events"])
-	busy = false
-	board.refresh()
-	hud.refresh_all()
+	await _play(res)
 	select_unit(u)
 
 
@@ -296,7 +299,8 @@ func do_research(id: String) -> void:
 		return
 	Sfx.play("coin")
 	hud.toast("Research started: %s" % DB.upgrade(id).name, UI.ACCENT)
-	hud.refresh_all()
+	await _play(res)
+	reselect()
 
 
 func do_train(b: MatchState.Building, unit_id: String) -> void:
@@ -304,10 +308,7 @@ func do_train(b: MatchState.Building, unit_id: String) -> void:
 	if not res["ok"]:
 		return
 	Sfx.play("coin")
-	board.refresh()
-	for e in res["events"]:
-		board.burst(m.center_px(e["at"][0]), board.color_of(me))
-	hud.refresh_all()
+	await _play(res)
 	select_building(b)
 
 
@@ -339,43 +340,35 @@ func confirm_build() -> void:
 	if not res["ok"]:
 		return
 	Sfx.play("coin")
-	board.refresh()
-	board.burst(m.center_px(at), board.color_of(me))
-	hud.refresh_all()
-	select_building(m.building_on(at))
+	preview_type = ""
+	build_cat = ""
+	await _play(res)
+	var b := m.building_on(at)
+	if b != null:
+		select_building(b)
+	else:
+		deselect()
 
 
 func end_turn() -> void:
 	if not my_turn():
 		return
 	deselect()
-	busy = true
 	Sfx.play("turn")
-	host.submit(me, { "type": "end_turn" })
+	var res := host.submit(me, { "type": "end_turn" })
+	await _play(res)
+	busy = true
 	hud.refresh_all()
-	board.refresh()
-	var enemy_events := host.run_ai_turns()
-	board.refresh()
+	host.run_ai_turns()
+	var rep := host.sync(me)
+	await _replay(rep["events"])
+	m.load_view(rep["view"])
 	busy = false
+	board.refresh()
 	hud.refresh_all()
 	if _check_over():
 		return
-	# your own start-of-turn news: finished jobs, drill income, new buildings
-	var mine := enemy_events.filter(func(e): return e["p"] == me and e["type"] in ["cleared", "drill", "built", "researched"])
-	_animate_events(mine)
-	var seen := 0
-	for e in enemy_events:
-		if e["type"] in ["move", "attack", "spawn", "turret", "destroyed"] and _visible_event(e):
-			seen += 1
-	hud.toast("Your turn! %s" % ("The enemy moved out of sight." if seen == 0 else "%d enemy actions seen." % seen), UI.ACCENT)
-
-
-func _visible_event(e: Dictionary) -> bool:
-	var v := m.visible_for(me)
-	for i in e["at"]:
-		if v[i]:
-			return true
-	return false
+	hud.toast("Your turn!", UI.ACCENT)
 
 
 func _check_over() -> bool:
@@ -386,23 +379,92 @@ func _check_over() -> bool:
 	return false
 
 
+# ---------------------------------------------------------------- replay
+
+const REPLAY_CAP := 20
+const SHOWN := ["move", "attack", "turret", "spawn", "build", "destroyed", "clear", "cleared", "drill", "built", "researched"]
+var replaying := false
+var replay_skip := false
+var replay_fast := false
+
+
+## Turn-start replay: what you saw of the enemy's turn, with the same
+## animations as your own actions (the last REPLAY_CAP of them).
+func _replay(evs: Array) -> void:
+	var shown := 0
+	for e in evs:
+		if e["type"] in SHOWN:
+			shown += 1
+	var enemy := evs.any(func(e): return e["p"] >= 0 and e["p"] != me and e["type"] in SHOWN)
+	replaying = enemy
+	replay_skip = false
+	if enemy:
+		hud.show_replay(true)
+		Engine.time_scale = 2.0 if replay_fast else 1.0
+	var skip_n := maxi(0, shown - REPLAY_CAP)
+	var played: Array = []
+	for e in evs:
+		if skip_n > 0 and e["type"] in SHOWN:
+			skip_n -= 1
+			m.replay_event(e)
+			continue
+		played.append(e)
+	board.refresh()
+	await _animate_events(played, true)
+	Engine.time_scale = 1.0
+	replaying = false
+	hud.show_replay(false)
+
+
+func toggle_replay_speed() -> void:
+	replay_fast = not replay_fast
+	if replaying:
+		Engine.time_scale = 2.0 if replay_fast else 1.0
+	hud.show_replay(replaying)
+
+
+func skip_replay() -> void:
+	replay_skip = true
+
+
 # ---------------------------------------------------------------- animation
 
-## Plays events with the same animations for everyone (used for replays later).
-func _animate_events(evs: Array, move_from := Vector2.INF) -> void:
+## Shows each event happening (same animations for your own actions and
+## for replays), applying it to the local view as it goes.
+func _animate_events(evs: Array, follow := false) -> void:
 	for e in evs:
-		match e["type"]:
+		if replay_skip:
+			m.replay_event(e)
+			continue
+		var t: String = e["type"]
+		if follow and t in SHOWN and not e["at"].is_empty():
+			await _follow(e["at"][e["at"].size() - 1])
+		match t:
 			"move":
+				var path: Array = e["path"]
+				if path.size() < 1:
+					m.replay_event(e)
+					continue
 				var u := m.unit_by_id(e["unit"])
 				if u == null:
-					continue
-				var path: Array = e["path"]
+					# an enemy coming out of the fog
+					u = MatchState.UnitS.new()
+					u.id = e["unit"]
+					u.type = e["what"]
+					u.owner = e["p"]
+					u.hp = e["hp"]
+					u.idx = path[0]
+					m.units.append(u)
+					m.rebuild_caches()
+					board.refresh()
 				Sfx.play("move")
-				var tw := create_tween()
-				board.unit_pos[u] = m.center_px(path[0])
-				for k in range(1, path.size()):
-					tw.tween_method(func(p: Vector2): board.unit_pos[u] = p, m.center_px(path[k - 1]), m.center_px(path[k]), 0.12)
-				await tw.finished
+				if path.size() > 1:
+					var tw := create_tween()
+					board.unit_pos[u] = m.center_px(path[0])
+					for k in range(1, path.size()):
+						tw.tween_method(func(p: Vector2): board.unit_pos[u] = p, m.center_px(path[k - 1]), m.center_px(path[k]), 0.12)
+					await tw.finished
+				m.replay_event(e)
 				board.unit_pos.erase(u)
 			"attack":
 				var u := m.unit_by_id(e["unit"])
@@ -415,12 +477,23 @@ func _animate_events(evs: Array, move_from := Vector2.INF) -> void:
 					tw.tween_method(func(p: Vector2): board.unit_pos[u] = p, from.lerp(to, 0.4), from, 0.16)
 					await tw.finished
 					board.unit_pos.erase(u)
+				else:
+					board.burst(m.center_px(e["at"][0]), Color("#ffe08a"))
 				board.burst(to, Color("#ff6b5b"))
 				board.float_text(to, "-%d" % e["dmg"], Color("#ff6b5b"), e["kill"])
 				if e["ret"] > 0 and u != null:
 					board.float_text(board.rest_pos(u.idx), "-%d" % e["ret"], Color("#ffb347"))
 				if e["kill"]:
 					Sfx.play("kill")
+				m.replay_event(e)
+				await get_tree().create_timer(0.25).timeout
+			"turret":
+				var to := m.center_px(e["target"])
+				Sfx.play("attack")
+				board.burst(to, Color("#ff6b5b"))
+				board.float_text(to, "-%d" % e["dmg"], Color("#ff6b5b"), e["kill"])
+				m.replay_event(e)
+				await get_tree().create_timer(0.3).timeout
 			"clear":
 				var u := m.unit_by_id(e["unit"])
 				var to := m.center_px(e["target"])
@@ -433,12 +506,14 @@ func _animate_events(evs: Array, move_from := Vector2.INF) -> void:
 					await tw.finished
 					board.unit_pos.erase(u)
 				board.float_text(to, "Clearing", Color("#ffe08a"))
+				m.replay_event(e)
 			"cleared":
 				var to := m.center_px(e["target"])
 				board.burst(to, Color("#ffd23f"))
 				if e["amount"] > 0:
 					Sfx.play("coin")
 					board.float_text(to, "+%d %s" % [e["amount"], String(e["resource"]).capitalize()], Color("#ffd23f"), true)
+				m.replay_event(e)
 			"drill":
 				var parts := []
 				if e["alloy"] > 0:
@@ -449,13 +524,29 @@ func _animate_events(evs: Array, move_from := Vector2.INF) -> void:
 			"researched":
 				if e["p"] == me:
 					hud.toast("Research done: %s" % DB.upgrade(e["upgrade"]).name, Color("#9ff0a8"))
-			"build", "built":
+			"build", "built", "spawn":
+				m.replay_event(e)
+				board.refresh()
 				board.burst(m.center_px(e["at"][0]), board.color_of(e["p"]))
-			"spawn":
-				board.burst(m.center_px(e["at"][0]), board.color_of(e["p"]))
+				if follow:
+					await get_tree().create_timer(0.3).timeout
 			"destroyed":
+				m.replay_event(e)
 				board.burst(m.center_px(e["at"][0]), Color("#ffb347"))
 				hud.toast("%s destroyed!" % DB.building(e["what"]).name, Color("#ff9b8f"))
+			_:
+				m.replay_event(e)
+		board.refresh()
+
+
+## Replay camera: glide to the action if it's off screen.
+func _follow(i: int) -> void:
+	var p := board.cam.unproject_position(board.world(i))
+	var vp := get_viewport().get_visible_rect().size
+	if p.x > vp.x * 0.12 and p.x < vp.x * 0.88 and p.y > vp.y * 0.18 and p.y < vp.y * 0.7:
+		return
+	board.look_at_tile(i, true)
+	await get_tree().create_timer(0.4).timeout
 
 
 ## Test-only commands (?debug): {"cheat": n} adds resources, or any
@@ -464,22 +555,23 @@ func _debug_cmd(c) -> void:
 	if not c is Dictionary:
 		return
 	if c.has("cheat"):
-		m.players[me].alloy += int(c["cheat"])
-		m.players[me].fuel += int(c["cheat"])
+		host.m.players[me].alloy += int(c["cheat"])
+		host.m.players[me].fuel += int(c["cheat"])
+		m.load_view(host.sync(me)["view"])
 	elif c.has("build_any"):
 		# build on the n-th free hex of your territory
 		var n := int(c.get("n", 0))
 		for i in m.n_tiles():
 			if m.build_problem(me, c["build_any"], i) == "":
 				if n == 0:
-					_send({ "type": "build", "building": c["build_any"], "at": i })
+					m.load_view(_send({ "type": "build", "building": c["build_any"], "at": i })["view"])
 					break
 				n -= 1
 	else:
 		for k in c:
 			if c[k] is float:
 				c[k] = int(c[k])
-		_send(c)
+		m.load_view(_send(c)["view"])
 	board.refresh()
 	hud.refresh_all()
 

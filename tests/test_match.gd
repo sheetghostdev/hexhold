@@ -20,6 +20,7 @@ func _init() -> void:
 	test_power()
 	test_gather()
 	test_research()
+	test_fog()
 	test_ai_games()
 	print("ALL MATCH TESTS PASSED" if failures == 0 else "%d MATCH FAILURES" % failures)
 	quit(1 if failures > 0 else 0)
@@ -284,6 +285,66 @@ func test_research() -> void:
 	m.players[0].researched.append("recon_drones")
 	check(m.ustat(rif, "vision") == vis + 1, "Recon Drones adds vision")
 	check(m.ustat(m.player_units(1)[0], "vision") == DB.unit(m.player_units(1)[0].type).vision, "upgrades are per player")
+
+
+func test_fog() -> void:
+	var m := new_match(21)
+	var host := MatchHost.new(m)
+	var client := MatchState.new()
+	client.load_view(JSON.parse_string(JSON.stringify(host.sync(0)["view"])))
+	check(client.w == m.w and client.player_units(0).size() == m.player_units(0).size(), "client view loads from JSON")
+	var leaks := 0
+	var private_leaks := 0
+	var path_leaks := 0
+	var checked := 0
+	var guard := 0
+	while m.winner < 0 and guard < 60:
+		guard += 1
+		var p := m.cur
+		MatchAI.play_turn(m)
+		m.apply(p, { "type": "end_turn" })
+		if p != 1:
+			continue
+		# player 0's turn starts: what does the host send them?
+		var vis := m.visible_for(0)
+		var pack: Dictionary = JSON.parse_string(JSON.stringify(host.sync(0)))
+		var view: Dictionary = pack["view"]
+		for u in view["units"]:
+			if int(u["owner"]) != 0 and not vis[int(u["idx"])]:
+				leaks += 1
+		for b in view["buildings"]:
+			if int(b["owner"]) != 0 and not vis[int(b["idx"])]:
+				leaks += 1
+		if view["players"][1].has("alloy") or view["players"][1].has("researched"):
+			leaks += 1
+		for i in m.n_tiles():
+			if not vis[i] and int(view["obstacle"][i]) != -1:
+				leaks += 1
+			if m.players[0].explored[i] == 0 and m.ground[i] == MatchState.Ground.WATER and int(view["ground"][i]) == MatchState.Ground.WATER:
+				leaks += 1
+		for e in pack["events"]:
+			check(not e.has("seen_by") and not e.has("paths"), "host-only event fields are stripped")
+			if int(e["p"]) == 1 and e["type"] in MatchState.PRIVATE_EVENTS:
+				private_leaks += 1
+			if int(e["p"]) == 1 and e["type"] == "move":
+				for i in e["path"]:
+					if not m.players[0].explored[int(i)]:
+						path_leaks += 1
+		# the client replays the events, then adopts the view
+		for e in pack["events"]:
+			client.replay_event(e)
+		client.load_view(view)
+		check(client.player_units(0).size() == m.player_units(0).size(), "client keeps own units in sync")
+		var seen_enemy := 0
+		for u in m.player_units(1):
+			if vis[u.idx]:
+				seen_enemy += 1
+		check(client.player_units(1).size() == seen_enemy, "client sees exactly the visible enemy units")
+		checked += 1
+	check(checked > 3, "fog checked over several turns")
+	check(leaks == 0, "views never contain hidden data (%d leaks)" % leaks)
+	check(private_leaks == 0, "private enemy events are never sent")
+	check(path_leaks == 0, "enemy move paths only show hexes you could see")
 
 
 func test_ai_games() -> void:

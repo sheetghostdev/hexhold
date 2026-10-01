@@ -53,7 +53,10 @@ class UnitS:
 
 
 var match_id := ""
-var map_seed := 0
+var map_seed := 0     # host only: the map generator seed (logged, never sent)
+var look_seed := 0    # cosmetic randomness for drawing (safe to share)
+var win_reason := ""
+var final_scores: Array = []
 var radius := 5
 var w := 0
 var h := 0
@@ -517,7 +520,7 @@ func _cmd_move(p: int, cmd: Dictionary) -> String:
 	u.moved = true
 	dirty()
 	update_explored(p)
-	_event(p, "move", path, { "unit": u.id, "path": path })
+	_event(p, "move", path, { "unit": u.id, "what": u.type, "hp": u.hp, "path": path })
 	return ""
 
 
@@ -535,7 +538,7 @@ func _cmd_attack(p: int, cmd: Dictionary) -> String:
 	if fc["kind"] == "building":
 		var b := building_on(t)
 		b.hp -= fc["dmg"]
-		_event(p, "attack", [from, t], { "unit": u.id, "target": t, "dmg": fc["dmg"], "ret": 0, "kill": b.hp <= 0 })
+		_event(p, "attack", [from, t], { "unit": u.id, "what": u.type, "target": t, "dmg": fc["dmg"], "ret": 0, "kill": b.hp <= 0, "victim": b.owner })
 		if b.hp <= 0:
 			_destroy_building(b, p)
 		return ""
@@ -543,7 +546,7 @@ func _cmd_attack(p: int, cmd: Dictionary) -> String:
 	d.hp -= fc["dmg"]
 	if d.hp > 0 and fc["ret"] > 0:
 		u.hp -= fc["ret"]
-	_event(p, "attack", [from, t], { "unit": u.id, "target": t, "dmg": fc["dmg"], "ret": fc["ret"], "kill": d.hp <= 0 })
+	_event(p, "attack", [from, t], { "unit": u.id, "what": u.type, "target": t, "dmg": fc["dmg"], "ret": fc["ret"], "kill": d.hp <= 0, "victim": d.owner })
 	if d.hp <= 0:
 		_remove_unit(d)
 		u.kills += 1
@@ -843,7 +846,7 @@ func _turrets_fire(p: int) -> void:
 			continue
 		var dmg := int(roundf(bstat(b, "attack")))
 		target.hp -= dmg
-		_event(p, "turret", [b.idx, target.idx], { "building": b.id, "target": target.idx, "dmg": dmg, "kill": target.hp <= 0 })
+		_event(p, "turret", [b.idx, target.idx], { "building": b.id, "target": target.idx, "dmg": dmg, "kill": target.hp <= 0, "victim": target.owner })
 		if target.hp <= 0:
 			_remove_unit(target)
 
@@ -875,7 +878,7 @@ func _eliminate(p: int) -> void:
 			alive.append(i)
 	if alive.size() == 1:
 		winner = alive[0]
-		_event(-1, "win", [], { "player": winner, "reason": "hq" })
+		_finish("hq")
 
 
 func score(p: int) -> int:
@@ -887,6 +890,14 @@ func score(p: int) -> int:
 	return s
 
 
+func _finish(reason: String) -> void:
+	win_reason = reason
+	final_scores = []
+	for i in players.size():
+		final_scores.append(score(i))
+	_event(-1, "win", [], { "player": winner, "reason": reason, "scores": final_scores })
+
+
 func _decide_by_score() -> void:
 	var best := -1
 	var best_s := -1
@@ -895,7 +906,7 @@ func _decide_by_score() -> void:
 			best_s = score(i)
 			best = i
 	winner = best
-	_event(-1, "win", [], { "player": winner, "reason": "score" })
+	_finish("score")
 
 
 # ---------------------------------------------------------------- creation
@@ -933,15 +944,283 @@ func place_building(type: String, i: int, owner: int, finished: bool) -> Buildin
 
 # ---------------------------------------------------------------- events
 
-## Every event records who did it and which hexes it touched (for fog).
+## Every event records who did it and which hexes it touched. At that
+## moment we also note which other players could see it ("seen_by"), and
+## for moves, the part of the path each of them saw. The host uses this to
+## send each player only what they saw (fog of war).
 func _event(p: int, type: String, at: Array, data: Dictionary) -> void:
 	seq += 1
 	var e := { "seq": seq, "turn": turn, "p": p, "type": type, "at": at }
 	for k in data:
 		assert(not e.has(k), "event data may not use the reserved key " + k)
 	e.merge(data)
+	if p >= 0:
+		var seen := []
+		var paths := {}
+		for q in players.size():
+			if q == p:
+				continue
+			var v := visible_for(q)
+			var hit: bool = data.get("victim", -1) == q or data.get("owner", -1) == q
+			var part := []
+			for i in at:
+				if v[i]:
+					hit = true
+					part.append(i)
+			if hit:
+				seen.append(q)
+				if type == "move":
+					paths[q] = part
+		e["seen_by"] = seen
+		if type == "move":
+			e["paths"] = paths
 	events.append(e)
 
 
-func events_since(s: int) -> Array:
-	return events.filter(func(e): return e["seq"] > s)
+## Events only their owner hears about (the visible results reach others
+## through the map itself).
+const PRIVATE_EVENTS := ["research", "researched", "drill", "cleared"]
+
+
+## The events since sequence number s that player q is allowed to know,
+## cleaned of host-only fields.
+func events_for(q: int, s: int) -> Array:
+	var out := []
+	for e in events:
+		if e["seq"] <= s:
+			continue
+		var mine: bool = e["p"] == q or e["p"] < 0
+		if not mine and (e["type"] in PRIVATE_EVENTS or not e.get("seen_by", []).has(q)):
+			continue
+		var c: Dictionary = e.duplicate(true)
+		c.erase("seen_by")
+		if c.has("paths"):
+			if not mine:
+				c["path"] = c["paths"].get(q, [])
+				c["at"] = c["path"]
+			c.erase("paths")
+		out.append(c)
+	return out
+
+
+# ---------------------------------------------------------------- views
+
+## Everything player q may know right now, as plain JSON-safe data.
+## Hidden things are simply left out: unexplored terrain, enemy units out
+## of sight, enemy buildings out of sight, enemy stockpiles and research.
+func to_view(q: int) -> Dictionary:
+	var vis := visible_for(q)
+	var ex := players[q].explored
+	var g := []
+	var ob := []
+	var am := []
+	var seen := []
+	for i in n_tiles():
+		var known := ground[i] == Ground.VOID or ex[i] == 1
+		g.append(ground[i] if known else Ground.LAND)
+		ob.append(obstacle[i] if vis[i] else -1)
+		am.append(amount[i] if vis[i] else -1)
+		if vis[i]:
+			seen.append(i)
+	var pls := []
+	for i in players.size():
+		var pl := players[i]
+		var d := { "name": pl.name, "color": pl.color, "ai": pl.ai, "alive": pl.alive }
+		if i == q:
+			d.merge({ "alloy": pl.alloy, "fuel": pl.fuel, "explored": Array(pl.explored),
+				"researched": pl.researched.duplicate(), "research": pl.research, "research_left": pl.research_left })
+		pls.append(d)
+	var bl := []
+	for b in buildings:
+		if b.owner == q or vis[b.idx]:
+			bl.append({ "id": b.id, "type": b.type, "owner": b.owner, "idx": b.idx, "hp": b.hp, "build_left": b.build_left })
+	var ul := []
+	for u in units:
+		if u.owner == q or vis[u.idx]:
+			var d := { "id": u.id, "type": u.type, "owner": u.owner, "idx": u.idx, "hp": u.hp,
+				"moved": u.moved, "attacked": u.attacked, "fresh": u.fresh, "kills": u.kills }
+			if u.owner == q:
+				d.merge({ "task": u.task, "task_left": u.task_left })
+			ul.append(d)
+	var v := { "viewer": q, "match_id": match_id, "look_seed": look_seed, "radius": radius, "w": w, "h": h,
+		"center": center, "turn": turn, "cur": cur, "winner": winner, "seq": seq,
+		"ground": g, "obstacle": ob, "amount": am, "visible": seen,
+		"players": pls, "buildings": bl, "units": ul }
+	if winner >= 0:
+		v["win_reason"] = win_reason
+		v["final_scores"] = final_scores.duplicate()
+	return v
+
+
+## Client side: update this (view) state from a host view. Objects with the
+## same id are kept (so the board keeps its models). What you saw before but
+## can't see now (obstacles, enemy buildings) is remembered as last seen.
+func load_view(v: Dictionary) -> void:
+	var first := w == 0
+	match_id = v["match_id"]
+	look_seed = int(v["look_seed"])
+	radius = int(v["radius"])
+	w = int(v["w"])
+	h = int(v["h"])
+	center = int(v["center"])
+	turn = int(v["turn"])
+	cur = int(v["cur"])
+	winner = int(v["winner"])
+	seq = int(v["seq"])
+	win_reason = v.get("win_reason", "")
+	final_scores = v.get("final_scores", [])
+	var q := int(v["viewer"])
+	var n := w * h
+	if first:
+		ground.resize(n)
+		obstacle.resize(n)
+		amount.resize(n)
+	var vis := {}
+	for i in v["visible"]:
+		vis[int(i)] = true
+	for i in n:
+		ground[i] = int(v["ground"][i])
+		if vis.has(i):
+			obstacle[i] = int(v["obstacle"][i])
+			amount[i] = int(v["amount"][i])
+	# players
+	var pv: Array = v["players"]
+	while players.size() < pv.size():
+		players.append(PlayerState.new())
+	for i in pv.size():
+		var d: Dictionary = pv[i]
+		var pl := players[i]
+		pl.name = d["name"]
+		pl.color = int(d["color"])
+		pl.ai = d["ai"]
+		pl.alive = d["alive"]
+		if d.has("alloy"):
+			pl.alloy = int(d["alloy"])
+			pl.fuel = int(d["fuel"])
+			pl.explored = PackedByteArray(d["explored"])
+			pl.researched.assign(d["researched"])
+			pl.research = d["research"]
+			pl.research_left = int(d["research_left"])
+		elif pl.explored.size() != n:
+			pl.explored.resize(n)
+	# buildings: refresh what is listed; forget listed-hex ghosts; keep
+	# remembered enemy buildings on hexes we can't see now
+	var old_b := {}
+	for b in buildings:
+		old_b[b.id] = b
+	var nb: Array[Building] = []
+	var listed := {}
+	for d in v["buildings"]:
+		var id := int(d["id"])
+		var b: Building = old_b.get(id, Building.new())
+		b.id = id
+		b.type = d["type"]
+		b.owner = int(d["owner"])
+		b.idx = int(d["idx"])
+		b.hp = int(d["hp"])
+		b.build_left = int(d["build_left"])
+		nb.append(b)
+		listed[id] = true
+	for b in buildings:
+		if not listed.has(b.id) and b.owner != q and not vis.has(b.idx):
+			nb.append(b)
+	nb.sort_custom(func(a, b): return a.id < b.id)
+	buildings = nb
+	# units: exactly what is listed
+	var old_u := {}
+	for u in units:
+		old_u[u.id] = u
+	var nu: Array[UnitS] = []
+	for d in v["units"]:
+		var id := int(d["id"])
+		var u: UnitS = old_u.get(id, UnitS.new())
+		u.id = id
+		u.type = d["type"]
+		u.owner = int(d["owner"])
+		u.idx = int(d["idx"])
+		u.hp = int(d["hp"])
+		u.moved = d["moved"]
+		u.attacked = d["attacked"]
+		u.fresh = d["fresh"]
+		u.kills = int(d["kills"])
+		u.task = int(d.get("task", -1))
+		u.task_left = int(d.get("task_left", 0))
+		nu.append(u)
+	units = nu
+	rebuild_caches()
+
+
+## Client side: roughly apply an event to this view so a replay can show
+## things happening one by one. The next host view corrects any detail.
+func replay_event(e: Dictionary) -> void:
+	match e["type"]:
+		"move":
+			var path: Array = e["path"]
+			if path.is_empty():
+				return
+			var u := unit_by_id(int(e["unit"]))
+			if u == null:
+				u = UnitS.new()
+				u.id = int(e["unit"])
+				u.type = e["what"]
+				u.owner = int(e["p"])
+				u.hp = int(e["hp"])
+				u.idx = int(path[0])
+				units.append(u)
+			u.idx = int(path[path.size() - 1])
+			u.moved = true
+		"attack", "turret":
+			var t := int(e["target"])
+			var d := unit_on(t)
+			if d != null:
+				d.hp -= int(e["dmg"])
+				if e["kill"]:
+					units.erase(d)
+			else:
+				var b := building_on(t)
+				if b != null:
+					b.hp -= int(e["dmg"])
+			if e["type"] == "attack":
+				var a := unit_by_id(int(e["unit"]))
+				if a != null:
+					a.attacked = true
+					a.moved = true
+					a.hp -= int(e.get("ret", 0))
+					if a.hp <= 0:
+						units.erase(a)
+		"spawn":
+			if unit_by_id(int(e["unit"])) == null:
+				var u := UnitS.new()
+				u.id = int(e["unit"])
+				u.type = e["what"]
+				u.owner = int(e["p"])
+				u.idx = int(e["at"][0])
+				u.hp = DB.unit(u.type).hp
+				u.fresh = true
+				units.append(u)
+		"build":
+			if building_by_id(int(e["building"])) == null:
+				var b := Building.new()
+				b.id = int(e["building"])
+				b.type = e["what"]
+				b.owner = int(e["p"])
+				b.idx = int(e["at"][0])
+				b.hp = DB.building(b.type).hp
+				b.build_left = DB.building(b.type).build_turns
+				buildings.append(b)
+				obstacle[b.idx] = 0
+		"built":
+			var b := building_by_id(int(e["building"]))
+			if b != null:
+				b.build_left = 0
+		"destroyed":
+			var b := building_by_id(int(e["building"]))
+			if b != null:
+				buildings.erase(b)
+		"cleared":
+			obstacle[int(e["target"])] = 0
+			amount[int(e["target"])] = 0
+		"turn":
+			cur = int(e["player"])
+			turn = int(e["turn"])
+	rebuild_caches()
