@@ -147,7 +147,7 @@ func _team_mat(c: Color, dim: bool) -> StandardMaterial3D:
 func color_of(p: int) -> Color:
 	if p < 0 or p >= m.players.size():
 		return Color("#9a9a9a")
-	return Defs.player_color(m.players[p].color)
+	return UI.player_color(m.players[p].color)
 
 
 # ---------------------------------------------------------------- state
@@ -266,7 +266,7 @@ static func _xf(pos: Vector3, yaw: float = 0.0, s: float = 1.0) -> Transform3D:
 
 
 func _rand(i: int, k: int) -> float:
-	return float(GameState.mix(m.look_seed, i, k) % 10000) / 10000.0
+	return float(UI.mix(m.look_seed, i, k) % 10000) / 10000.0
 
 
 static func _yaw_to(d: Vector3) -> float:

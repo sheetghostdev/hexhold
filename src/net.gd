@@ -1,7 +1,7 @@
 class_name Net
 extends RefCounted
-## Browser glue: reading the turn from the link, sharing a turn to
-## Discord (via the phone's share sheet), clipboard and text prompts.
+## Browser glue: the page address, sharing an invite to Discord (via the
+## phone's share sheet), clipboard and text prompts.
 
 ## JS booleans can come back as bool or int depending on the bridge.
 static func _truthy(v: Variant) -> bool:
@@ -16,16 +16,6 @@ static func is_web() -> bool:
 	return OS.has_feature("web")
 
 
-## The turn code carried in the page address (#g=...), or "".
-static func code_from_location() -> String:
-	if not is_web():
-		return ""
-	var h = JavaScriptBridge.eval("window.location.hash || ''", true)
-	if typeof(h) != TYPE_STRING or h == "":
-		return ""
-	return Codec.extract_code(h)
-
-
 static func clear_location_code() -> void:
 	if is_web():
 		JavaScriptBridge.eval("history.replaceState(null, '', window.location.pathname + window.location.search)", true)
@@ -38,13 +28,6 @@ static func base_url() -> String:
 		if typeof(u) == TYPE_STRING and u.begins_with("http"):
 			return u
 	return Storage.get_setting("base_url", "")
-
-
-static func turn_link(code: String) -> String:
-	var base := base_url()
-	if base == "":
-		return "HEXHOLD:" + code
-	return base + "#g=" + code
 
 
 ## Opens the share sheet (Discord, Messages...). Falls back to the clipboard.

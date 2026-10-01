@@ -223,3 +223,23 @@ static func cost_bb(cost: Array, have: Array = []) -> String:
 	if parts.is_empty():
 		return "free"
 	return "  ".join(parts)
+
+
+const PLAYER_COLORS := [
+	Color("#3d7be0"), Color("#e04848"), Color("#f2b632"), Color("#9b5de5"),
+	Color("#20b2aa"), Color("#f07c32"),
+]
+
+
+static func player_color(c: int) -> Color:
+	if c < 0:
+		return Color("#9a9a9a")
+	return PLAYER_COLORS[c % PLAYER_COLORS.size()]
+
+
+## Cheap deterministic hash (for cosmetic variation).
+static func mix(a: int, b: int, c: int) -> int:
+	var x := (a * 73856093) ^ (b * 19349663) ^ (c * 83492791)
+	x = (x ^ (x >> 13)) * 1274126177
+	x = x ^ (x >> 16)
+	return x & 0x7fffffff

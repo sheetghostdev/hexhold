@@ -67,3 +67,22 @@ static func building(ci: CanvasItem, id: String, c: Vector2, r: float, col: Colo
 	var fs := int(r * 0.75)
 	var tw := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
 	ci.draw_string(font, c + Vector2(-tw / 2.0, fs * 0.35), text, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color.WHITE)
+
+
+## Small castle crest (title screen).
+static func castle(ci: CanvasItem, c: Vector2, s: float, stone: Color, flag: Color) -> void:
+	var dark := stone.darkened(0.3)
+	var ink := Color("#2b2f36")
+	var pts := func(arr: Array) -> PackedVector2Array:
+		var out := PackedVector2Array()
+		for p in arr:
+			out.append(c + Vector2(p[0], p[1]) * s)
+		return out
+	ci.draw_colored_polygon(pts.call([[-0.45, -0.3], [0.45, -0.3], [0.45, 0.45], [-0.45, 0.45]]), stone)
+	for k in 4:
+		var x0 := -0.45 + k * 0.26
+		ci.draw_colored_polygon(pts.call([[x0, -0.48], [x0 + 0.16, -0.48], [x0 + 0.16, -0.3], [x0, -0.3]]), stone)
+	ci.draw_colored_polygon(pts.call([[-0.12, 0.45], [-0.12, 0.15], [0, 0.05], [0.12, 0.15], [0.12, 0.45]]), ink)
+	ci.draw_line(c + Vector2(-0.45, -0.3) * s, c + Vector2(0.45, -0.3) * s, dark, maxf(1.0, s * 0.04))
+	ci.draw_line(c + Vector2(0, -0.48) * s, c + Vector2(0, -0.95) * s, ink, maxf(1.0, s * 0.05))
+	ci.draw_colored_polygon(pts.call([[0.02, -0.95], [0.42, -0.84], [0.02, -0.72]]), flag)

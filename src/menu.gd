@@ -1,17 +1,12 @@
 class_name Menu
 extends Control
-## Title screen, new-game setup, saved games and joining from a link.
+## Title screen: play a friend online, play the computer, how to play.
 
-signal start_game(gs: GameState, local: int)
-signal open_entry(entry: Dictionary)
-signal open_code(text: String)
 signal start_match
 signal host_online
 
 var content: VBoxContainer
 var modal_root: Control
-var setup := {}
-var _t := 0.0
 
 
 func _ready() -> void:
@@ -41,20 +36,7 @@ func _ready() -> void:
 	modal_root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	modal_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(modal_root)
-	var my_name: String = Storage.get_setting("my_name", "Player 1")
-	setup = {
-		"players": [
-			{ "name": my_name, "color": 0, "ai": false },
-			{ "name": "Brother", "color": 1, "ai": false },
-		],
-		"online": true,
-		"size": 0,
-		"mode": GameState.Mode.CONQUEST,
-	}
 	show_main()
-
-
-
 
 
 func _draw_bg(c: Control) -> void:
@@ -83,41 +65,43 @@ func _wide(b: Control) -> Control:
 	return b
 
 
-# ---------------------------------------------------------------- main page
+func my_name() -> String:
+	return String(Storage.get_setting("my_name", "")).left(16)
+
 
 func show_main() -> void:
 	_clear()
-	var crest := IconRect.make("castle", 150)
+	var crest := IconRect.make("castle", 150, 0, Color("#3d7be0"))
 	crest.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	content.add_child(crest)
 	var t := UI.label("HEXHOLD", "Title")
 	t.add_theme_font_size_override("font_size", 86)
 	t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	content.add_child(t)
-	var sub := UI.label("Roads  ·  Walls  ·  Conquest", "Small")
+	var sub := UI.label("Build  ·  Power  ·  Battle", "Small")
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	sub.add_theme_font_size_override("font_size", 24)
 	content.add_child(sub)
 	content.add_child(UI.spacer(18, false))
 	content.add_child(_wide(UI.button("Play a friend online", func(): host_online.emit(), "PrimaryButton", 96)))
 	content.add_child(_wide(UI.button("Quick match vs AI", func(): start_match.emit(), "", 88)))
-	var note := UI.label("New: the military game (in development)", "Small")
-	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	content.add_child(_wide(note))
-	content.add_child(_wide(UI.button("Classic game (old)", show_new_game, "", 80)))
-	var games := Storage.list_games()
-	if not games.is_empty():
-		content.add_child(_wide(UI.button("Continue (%d)" % games.size(), show_saved, "", 88)))
-	content.add_child(_wide(UI.button("Open turn link", _ask_link, "", 88)))
-	content.add_child(_wide(UI.button("How to play", show_help, "GhostButton", 80)))
+	content.add_child(_wide(UI.button("Your name: %s" % my_name() if my_name() != "" else "Set your name", _rename, "GhostButton", 72)))
+	content.add_child(_wide(UI.button("How to play", show_help, "GhostButton", 72)))
 	var snd := func():
 		Sfx.set_enabled(not Sfx.is_enabled())
 		show_main()
 	content.add_child(_wide(UI.button("Sound: %s" % ("on" if Sfx.is_enabled() else "off"), snd, "GhostButton", 64)))
 	content.add_child(UI.spacer(10, false))
-	var foot := UI.label("Take turns whenever you like: send the link to your friends on Discord.", "Small", true)
+	var foot := UI.label("1v1, about 10 minutes. Send your friend the invite link on Discord.", "Small", true)
 	foot.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	content.add_child(_wide(foot))
+
+
+func _rename() -> void:
+	var r = Net.prompt("Your name (shown to your opponent):", my_name())
+	if r is String and r.strip_edges() != "":
+		Storage.set_setting("my_name", r.strip_edges().left(16))
+	show_main()
 
 
 func show_error(text: String) -> void:
@@ -127,272 +111,38 @@ func show_error(text: String) -> void:
 	_modal(v)
 
 
-# ---------------------------------------------------------------- new game
+const HELP := """[b]Goal:[/b] destroy the enemy [b]Home Base[/b]. After 12 turns each, the higher score wins.
 
-func show_new_game() -> void:
-	_clear()
-	var head := UI.label("New game", "Title")
-	head.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	content.add_child(head)
+[b]Your turn:[/b] tap a unit, then a [b]white dot[/b] to move or a [color=#ff6b5b]red target[/color] to attack (the number is the damage you'll do). Press [b]End turn[/b] when you're done. Online, each turn has a 60 second clock.
 
-	content.add_child(_section("How will you play?"))
-	content.add_child(_choice_row([["Send turns by link", true], ["Pass & play here", false]], setup["online"], _set_option.bind("online")))
-	var hint := "Everyone plays on their own phone. After each turn you get a link to post in Discord." if setup["online"] else "Everyone takes turns on this device. The screen hides between turns."
-	content.add_child(_wide(UI.label(hint, "Small", true)))
+[b]Build:[/b] tap an empty hex in your territory (the coloured area) and pick Power, Production, Economy or Defense. You see a preview first. Buildings take a few turns and grow your territory.
 
-	content.add_child(_section("Players"))
-	var players: Array = setup["players"]
-	for i in players.size():
-		content.add_child(_player_row(i))
-	if players.size() < 4:
-		content.add_child(_wide(UI.button("+ Add player", _add_player, "GhostButton", 72)))
+[b]Power:[/b] the bolt at the top shows power needed / made. If you need more than you make, your newest buildings switch off (red bolt). Power Plants are juicy targets.
 
-	content.add_child(_section("Map size"))
-	var sizes := []
-	for k in Defs.MAP_SIZES.size():
-		sizes.append([Defs.MAP_SIZES[k]["name"], k])
-	content.add_child(_choice_row(sizes, setup["size"], _set_option.bind("size")))
+[b]Resources:[/b] [color=#c9d2dc]Alloy[/color] comes from rocks, [color=#7bd389]Fuel[/color] from trees. Select an [b]Engineer[/b] and tap a [color=#ffd23f]yellow ring[/color] to clear them for resources, or build a Drill next to them. Clearing also frees the hex for building.
 
-	content.add_child(_section("Victory"))
-	content.add_child(_choice_row([["Conquest", GameState.Mode.CONQUEST], ["Glory (30 turns)", GameState.Mode.GLORY]], setup["mode"], _set_option.bind("mode")))
-	var mh := "Take every enemy town." if setup["mode"] == GameState.Mode.CONQUEST else "Highest score after 30 turns wins. Good for shorter games."
-	content.add_child(_wide(UI.label(mh, "Small", true)))
+[b]Units:[/b] Riflemen hold the line, Snipers shoot from 3 hexes, Tanks crush buildings, Engineers gather and can build outside your territory. Research upgrades at the Home Base.
 
-	content.add_child(UI.spacer(8, false))
-	content.add_child(_wide(UI.button("Start game", _start, "PrimaryButton", 96)))
-	content.add_child(_wide(UI.button("Back", show_main, "GhostButton", 72)))
+[b]Fog of war:[/b] you only see what your units and buildings see. At the start of your turn you watch a replay of what you saw the enemy do."""
 
-
-func _set_option(value: Variant, key: String) -> void:
-	setup[key] = value
-	show_new_game()
-
-
-func _section(text: String) -> Label:
-	var l := UI.label(text, "Heading")
-	l.add_theme_font_size_override("font_size", 28)
-	return l
-
-
-func _choice_row(options: Array, current: Variant, cb: Callable) -> Control:
-	var row := UI.hbox(8)
-	row.custom_minimum_size.x = _width()
-	for o in options:
-		var b := UI.button(o[0], cb.bind(o[1]), "ChoiceButton", 76)
-		b.toggle_mode = true
-		b.button_pressed = o[1] == current
-		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		b.clip_text = true
-		row.add_child(b)
-	return row
-
-
-func _player_row(i: int) -> Control:
-	var p: Dictionary = setup["players"][i]
-	var card := PanelContainer.new()
-	card.theme_type_variation = "Card"
-	card.custom_minimum_size.x = _width()
-	var row := UI.hbox(10)
-	var swatch := Button.new()
-	swatch.custom_minimum_size = Vector2(64, 64)
-	swatch.focus_mode = Control.FOCUS_NONE
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Defs.player_color(p["color"])
-	sb.set_corner_radius_all(32)
-	for st in ["normal", "hover", "pressed"]:
-		swatch.add_theme_stylebox_override(st, sb)
-	swatch.pressed.connect(_cycle_color.bind(i))
-	row.add_child(swatch)
-	var name := UI.button(p["name"], _rename.bind(i), "GhostButton", 64)
-	name.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	name.alignment = HORIZONTAL_ALIGNMENT_LEFT
-	name.clip_text = true
-	row.add_child(name)
-	if i > 0:
-		var ai := UI.button("Computer" if p["ai"] else "Human", _toggle_ai.bind(i), "", 64)
-		ai.custom_minimum_size.x = 150
-		row.add_child(ai)
-		var rm := UI.button("×", _remove_player.bind(i), "GhostButton", 64)
-		rm.custom_minimum_size.x = 56
-		rm.disabled = setup["players"].size() <= 2
-		row.add_child(rm)
-	else:
-		var me := UI.label("you", "Small")
-		row.add_child(me)
-	card.add_child(row)
-	return card
-
-
-func _cycle_color(i: int) -> void:
-	var used := {}
-	for p in setup["players"]:
-		used[p["color"]] = true
-	var c: int = setup["players"][i]["color"]
-	for k in Defs.PLAYER_COLORS.size():
-		c = (c + 1) % Defs.PLAYER_COLORS.size()
-		if not used.has(c):
-			break
-	setup["players"][i]["color"] = c
-	show_new_game()
-
-
-func _toggle_ai(i: int) -> void:
-	var p: Dictionary = setup["players"][i]
-	p["ai"] = not p["ai"]
-	if p["ai"] and p["name"] in ["Brother", "Player 3", "Player 4"]:
-		p["name"] = "Sir Bot %s" % ["", "", "Alaric", "Baldwin", "Cedric"][i + 1] if i + 1 < 5 else "Sir Bot"
-		p["name"] = p["name"].strip_edges()
-	show_new_game()
-
-
-func _add_player() -> void:
-	var used := {}
-	for p in setup["players"]:
-		used[p["color"]] = true
-	var c := 0
-	while used.has(c):
-		c += 1
-	setup["players"].append({ "name": "Player %d" % (setup["players"].size() + 1), "color": c, "ai": false })
-	show_new_game()
-
-
-func _remove_player(i: int) -> void:
-	if setup["players"].size() > 2:
-		setup["players"].remove_at(i)
-		show_new_game()
-
-
-func _rename(i: int) -> void:
-	ask_text("Name for player %d" % (i + 1), setup["players"][i]["name"], _set_name.bind(i))
-
-
-func _set_name(t: String, i: int) -> void:
-	setup["players"][i]["name"] = t
-	if i == 0:
-		Storage.set_setting("my_name", t)
-	show_new_game()
-
-
-func _start() -> void:
-	var gs := GameState.create(setup)
-	start_game.emit(gs, 0)
-
-
-# ---------------------------------------------------------------- saved games
-
-func show_saved() -> void:
-	_clear()
-	var head := UI.label("Your games", "Title")
-	head.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	content.add_child(head)
-	for e in Storage.list_games():
-		content.add_child(_saved_card(e))
-	content.add_child(_wide(UI.button("Back", show_main, "GhostButton", 72)))
-
-
-func _saved_card(e: Dictionary) -> Control:
-	var card := PanelContainer.new()
-	card.theme_type_variation = "Card"
-	card.custom_minimum_size.x = _width()
-	var row := UI.hbox(10)
-	var v := UI.vbox(2)
-	v.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	var t := UI.label(e.get("title", "Game"))
-	t.clip_text = true
-	t.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	v.add_child(t)
-	var status := "Turn %d · " % int(e.get("turn", 1))
-	if e.get("over", false):
-		status += "finished"
-	elif e.get("waiting", false):
-		status += "waiting for %s" % e.get("cur_name", "the next player")
-	else:
-		status += "%s to move" % e.get("cur_name", "your")
-	var when := Time.get_datetime_string_from_unix_time(int(e.get("time", 0))).replace("T", " ").left(16)
-	v.add_child(UI.label(status, "Small"))
-	v.add_child(UI.label(when, "Small"))
-	row.add_child(v)
-	row.add_child(UI.button("Open", open_entry.emit.bind(e), "PrimaryButton", 72))
-	var del := UI.button("×", _confirm_delete.bind(e), "GhostButton", 72)
-	del.custom_minimum_size.x = 56
-	row.add_child(del)
-	card.add_child(row)
-	return card
-
-
-func _confirm_delete(e: Dictionary) -> void:
-	var v := UI.vbox(16)
-	v.add_child(UI.label("Delete \"%s\" from this device?" % e.get("title", "game"), "", true))
-	var row := UI.hbox(10)
-	var no := UI.button("Keep", _close_modal, "", 80)
-	no.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	var yes_cb := func():
-		Storage.delete_game(e["id"])
-		if Storage.list_games().is_empty():
-			show_main()
-		else:
-			show_saved()
-	var yes := UI.button("Delete", yes_cb, "DangerButton", 80)
-	yes.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	row.add_child(no)
-	row.add_child(yes)
-	v.add_child(row)
-	_modal(v)
-
-
-# ---------------------------------------------------------------- links
-
-func _ask_link() -> void:
-	ask_text("Paste the turn link from Discord", "", func(t: String): open_code.emit(t), 4000)
-
-
-## Text input that works well on phones: the browser's own prompt on the
-## web (supports paste), a text field elsewhere.
-func ask_text(title: String, current: String, cb: Callable, max_len: int = 16) -> void:
-	if Net.is_web():
-		var r = Net.prompt(title, current)
-		if typeof(r) == TYPE_STRING and r.strip_edges() != "":
-			cb.call(r.strip_edges().left(max_len))
-		return
-	var v := UI.vbox(16)
-	v.add_child(UI.label(title, "", true))
-	var le := LineEdit.new()
-	le.text = current
-	le.max_length = max_len
-	le.custom_minimum_size.y = 72
-	v.add_child(le)
-	var done := func():
-		var txt := le.text.strip_edges()
-		_close_modal()
-		if txt != "":
-			cb.call(txt)
-	le.text_submitted.connect(func(_t): done.call())
-	var row := UI.hbox(10)
-	var cancel := UI.button("Cancel", _close_modal, "", 76)
-	cancel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	var paste := UI.button("Paste", func(): le.text = DisplayServer.clipboard_get().strip_edges().left(max_len), "", 76)
-	var ok := UI.button("OK", done, "PrimaryButton", 76)
-	ok.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	row.add_child(cancel)
-	if max_len > 100:
-		row.add_child(paste)
-	row.add_child(ok)
-	v.add_child(row)
-	_modal(v)
-	le.grab_focus()
-
-
-# ---------------------------------------------------------------- help & modal
 
 func show_help() -> void:
-	_clear()
-	var head := UI.label("How to play", "Title")
-	head.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	content.add_child(head)
-	var h := Help.build()
-	h.custom_minimum_size.x = _width()
-	content.add_child(h)
-	content.add_child(_wide(UI.button("Back", show_main, "PrimaryButton", 80)))
+	var v := UI.vbox(14)
+	var t := UI.label("How to play", "Title", true)
+	t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	t.add_theme_font_size_override("font_size", 40)
+	v.add_child(t)
+	var r := UI.rich(HELP)
+	r.add_theme_font_size_override("normal_font_size", 21)
+	r.add_theme_font_size_override("bold_font_size", 21)
+	var sc := ScrollContainer.new()
+	sc.custom_minimum_size = Vector2(_width() - 40, minf(900.0, get_viewport_rect().size.y - 360))
+	sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	r.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	sc.add_child(r)
+	v.add_child(sc)
+	v.add_child(UI.button("Got it", _close_modal, "PrimaryButton", 80))
+	_modal(v)
 
 
 func _modal(content_node: Control) -> void:

@@ -1,10 +1,12 @@
 extends Node
-## Entry point: shows the menu, or jumps straight into a game when the
-## page was opened from a turn link.
+## Entry point: the title menu, a match against the computer, or an online
+## match (hosting one, or joining from an invite link: .../#join=code).
 
 var menu: Menu
-var game: GameScreen
+var match_screen: MatchScreen
+var backdrop: MatchBoard
 var _hash_cb = null
+var _t := 0.0
 
 
 func _ready() -> void:
@@ -15,15 +17,10 @@ func _ready() -> void:
 	if Net.is_web():
 		_hash_cb = JavaScriptBridge.create_callback(_on_hash_change)
 		JavaScriptBridge.get_interface("window").addEventListener("hashchange", _hash_cb)
+	show_menu()
 	var join := _join_code()
-	var code := Net.code_from_location()
 	if join != "":
-		show_menu()
 		join_online(join)
-	elif code != "":
-		open_code(code)
-	else:
-		show_menu()
 
 
 ## Sharp phone screens have 3x the pixels: render the 3D world a bit lower
@@ -45,13 +42,8 @@ func _tune_performance() -> void:
 func _on_hash_change(_args: Array) -> void:
 	var join := _join_code()
 	if join != "":
-		_clear()
 		show_menu()
 		join_online(join)
-		return
-	var code := Net.code_from_location()
-	if code != "":
-		open_code(code)
 
 
 func _clear() -> void:
@@ -67,12 +59,6 @@ func _clear() -> void:
 	if menu:
 		menu.queue_free()
 		menu = null
-	if game:
-		game.queue_free()
-		game = null
-
-
-var backdrop: Board
 
 
 func show_menu() -> void:
@@ -80,29 +66,32 @@ func show_menu() -> void:
 	_show_backdrop()
 	menu = Menu.new()
 	add_child(menu)
-	menu.start_game.connect(_on_start_game)
 	menu.start_match.connect(_on_start_match)
 	menu.host_online.connect(host_online)
-	menu.open_entry.connect(_on_open_entry)
-	menu.open_code.connect(open_code)
 
 
-## A small living kingdom drifting behind the title screen.
+## A computer-vs-computer battle drifting behind the title screen.
 func _show_backdrop() -> void:
 	if backdrop:
 		return
-	var gs := GameState.create({ "players": [
-		{ "name": "A", "color": 0, "ai": true }, { "name": "B", "color": 1, "ai": true },
-		{ "name": "C", "color": 2, "ai": true }], "size": 1, "seed": randi() % 100000 })
+	var m := MatchGen.create({ "players": [
+		{ "name": "A", "color": 0, "ai": true }, { "name": "B", "color": 1, "ai": true }] })
 	for k in 9:
-		AIPlayer.play_turn(gs)
-		gs.end_turn()
-	backdrop = Board.new()
+		MatchAI.play_turn(m)
+		m.apply(m.cur, { "type": "end_turn" })
+	backdrop = MatchBoard.new()
 	add_child(backdrop)
 	move_child(backdrop, 0)
-	backdrop.set_state(gs, -1)
-	backdrop.span = 12.0
-	backdrop.drift = true
+	backdrop.set_match(m, -1)
+	backdrop.look_at_tile(m.center)
+
+
+func _process(delta: float) -> void:
+	if backdrop and backdrop.m:
+		_t += delta
+		var c := backdrop.world(backdrop.m.center)
+		backdrop.focus = c + Vector3(sin(_t * 0.12) * 2.5, 0, cos(_t * 0.09) * 1.5)
+		backdrop._apply_camera()
 
 
 func _hide_backdrop() -> void:
@@ -111,28 +100,14 @@ func _hide_backdrop() -> void:
 		backdrop = null
 
 
-func _show_game() -> GameScreen:
-	_clear()
-	_hide_backdrop()
-	game = GameScreen.new()
-	add_child(game)
-	game.quit_to_menu.connect(show_menu)
-	return game
-
-
-var match_screen: MatchScreen
-
-
-## The new military game: you against the computer.
 func _on_start_match() -> void:
-	_clear()
-	_hide_backdrop()
 	var setup := { "players": [
 		{ "name": "You", "color": 0 }, { "name": "Enemy AI", "color": 1, "ai": true }] }
 	if Net.is_web():
 		var sd = JavaScriptBridge.eval("new URLSearchParams(location.search).get('seed') || ''", true)
 		if sd is String and sd.is_valid_int():
 			setup["seed"] = sd.to_int()
+	_clear()
 	var l := AiLink.new(MatchGen.create(setup))
 	_play_match(l, l.first_sync())
 
@@ -257,50 +232,3 @@ func _join_code() -> String:
 	if h is String and h.begins_with("#join="):
 		return h.substr(6).strip_edges().left(12)
 	return ""
-
-
-func _on_start_game(gs: GameState, local: int) -> void:
-	var g := _show_game()
-	g.start(gs, local)
-	if gs.online:
-		Storage.save_game(gs, local, false)
-
-
-func _on_open_entry(entry: Dictionary) -> void:
-	var gs := Codec.decode(entry.get("code", ""))
-	if gs == null:
-		menu.show_error("This saved game couldn't be read.")
-		return
-	_show_game().start(gs, int(entry.get("local", gs.cur)))
-
-
-func open_code(text: String) -> void:
-	var gs := Codec.decode(text)
-	Net.clear_location_code()
-	if gs == null:
-		if menu == null:
-			show_menu()
-		menu.show_error("That doesn't look like a Hexhold turn link. Make sure you copied the whole thing.")
-		return
-	var entry := Storage.load_entry(gs.game_id)
-	if not entry.is_empty() and int(entry.get("seq", 0)) > gs.seq:
-		if menu == null:
-			show_menu()
-		_older_link_prompt(gs, entry)
-		return
-	if not entry.is_empty():
-		var local := int(entry.get("local", -1))
-		if local == gs.cur or (int(entry.get("seq", 0)) == gs.seq):
-			_show_game().start(gs, local)
-			return
-	_show_game().start(gs, -1, true)
-
-
-func _older_link_prompt(gs: GameState, entry: Dictionary) -> void:
-	var v := UI.vbox(16)
-	v.add_child(UI.label("This link is older than the game saved on this device (turn %d). Someone may have sent an old link." % int(entry.get("turn", 0)), "", true))
-	var newer := UI.button("Open my newer save", func(): _on_open_entry(entry), "PrimaryButton", 80)
-	var older := UI.button("Open the old link anyway", func(): _show_game().start(gs, -1, true), "", 76)
-	v.add_child(newer)
-	v.add_child(older)
-	menu._modal(v)
